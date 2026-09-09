@@ -12,6 +12,8 @@ from src.config import (
     BARCODE_REGEX,
     RUNNING_FOOTER_REGEX,
     RUNNING_HEADER_REGEX,
+    RUNNING_AREA_DAY_REGEX,
+    ALT_FOOTER_CLEANUP_REGEX,
     QUESTION_SPLIT_REGEX,
     ALT_LINE_REGEX,
     IMAGE_ALT_PLACEHOLDER
@@ -34,13 +36,13 @@ def clean_page_text(text: str) -> str:
     for line in text.split('\n'):
         s = line.strip()
         # Rodapé com menção a caderno ou dia
-        if re.search(r'CADERNO\s+\d+', s, re.IGNORECASE) and any(c in s.upper() for c in ['AZUL', 'AMARELO', 'VERDE', 'BRANCO', 'CINZA', 'ROSA']):
+        if re.search(r'CADERNO\s+\d+', s, re.IGNORECASE) and any(c in s.upper() for c in ['AZUL', 'AMARELO', 'VERDE', 'BRANCO', 'CINZA', 'ROSA', 'PÁGINA', 'PAGINA']):
             continue
         # Números de página isolados
         if re.match(r'^\d{1,2}$', s):
             continue
-        # Cabeçalhos ou rodapés com nome da área e dia
-        if re.search(r'(CIÊNCIAS|MATEMÁTICA|LINGUAGENS)', s, re.IGNORECASE) and ('DIA' in s.upper() or 'CADERNO' in s.upper() or 'DOMINGO' in s.upper() or 'SÁBADO' in s.upper()):
+        # Cabeçalhos ou rodapés com nome da área e dia (por extenso ou siglas CH, CN, LC, MT, RED)
+        if RUNNING_AREA_DAY_REGEX.search(s):
             continue
         lines.append(line)
 
@@ -93,7 +95,7 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
 
             # Remove qualquer resíduo de marca d'água ou rodapé no final da alternativa
             alt_content = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*)+.*$', '', alt_content, flags=re.IGNORECASE).strip()
-            alt_content = re.sub(r'[•\-–—]?\s*(CIÊNCIAS|MATEMÁTICA|LINGUAGENS).*$', '', alt_content, flags=re.IGNORECASE).strip()
+            alt_content = ALT_FOOTER_CLEANUP_REGEX.sub('', alt_content).strip()
 
             if not alt_content:
                 alt_content = IMAGE_ALT_PLACEHOLDER

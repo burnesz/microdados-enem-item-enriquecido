@@ -54,7 +54,29 @@ EXCLUDED_TEST_KEYWORDS = [
 WATERMARK_REGEX = re.compile(r'(ENEM\s*\d{4}\s*){2,}', re.IGNORECASE)
 BARCODE_REGEX = re.compile(r'\*[0-9A-Z]+\*')
 RUNNING_FOOTER_REGEX = re.compile(r'CADERNO\s+\d+\s*[-–—]\s*(AZUL|AMARELO|VERDE|BRANCO|CINZA|ROSA)', re.IGNORECASE)
-RUNNING_HEADER_REGEX = re.compile(r'^(CIÊNCIAS|MATEMÁTICA|LINGUAGENS)', re.IGNORECASE)
+RUNNING_HEADER_REGEX = re.compile(r'^(CIÊNCIAS|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)', re.IGNORECASE)
+
+# Expressão para identificar rodapés e cabeçalhos com área e dia (por extenso ou siglas CH, CN, LC, MT, RED)
+RUNNING_AREA_DAY_REGEX = re.compile(
+    r'^(?:'
+    r'(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)\b.*?(?:DIA|CADERNO|DOMINGO|SÁBADO)|'
+    r'(?:CH|CN|LC|MT|RED)\s*[-–—|]\s*[12][ºo°]?\s*dia|'
+    r'[12][ºo°]?\s*dia(?:\s*[-–—|]\s*CADERNO|\s*$)'
+    r')',
+    re.IGNORECASE
+)
+
+# Expressão para remover resíduos de rodapés/cabeçalhos colados no final das alternativas
+ALT_FOOTER_CLEANUP_REGEX = re.compile(
+    r'(?:'
+    r'[•\-–—|]\s*(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)\b.*$|'
+    r'\b(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)\s*[-–—|]\s*[12][ºo°]?\s*dia.*$|'
+    r'\b(?:CH|CN|LC|MT|RED)\s*[-–—|]\s*[12][ºo°]?\s*dia.*$|'
+    r'[•\-–—|]?\s*CADERNO\s+\d+.*$|'
+    r'[•\-–—|]?\s*[12][ºo°]?\s*dia\s*[-–—|]\s*CADERNO.*$'
+    r')',
+    re.IGNORECASE
+)
 
 # Expressão para localizar cabeçalhos de questão (suporta caixa alta/baixa e número em linha separada)
 QUESTION_SPLIT_REGEX = re.compile(r'(?:^|\n)\s*QUEST[ÃA]O\s*[\n\r]*\s*(\d+)\s*', re.IGNORECASE)
