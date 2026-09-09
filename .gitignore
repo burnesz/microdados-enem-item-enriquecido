@@ -13,7 +13,9 @@ __pycache__/
 
 # Dados e arquivos de processamento (Datasets)
 raw/*
+!raw/.gitkeep
 processed/*
+!processed/.gitkeep
 *.csv
 *.zip
 *.parquet
