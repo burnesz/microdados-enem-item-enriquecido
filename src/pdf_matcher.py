@@ -1,71 +1,70 @@
 """
-Módulo para localização e mapeamento dinâmico dos arquivos PDF de prova.
+Módulo para mapeamento determinístico dos arquivos PDF de prova utilizando o catálogo oficial.
 """
 
 from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
-from src.config import AREA_TO_DAY, EXCLUDED_TEST_KEYWORDS
 
-def match_pdf_for_exam(provas_dir: Path, area: str, color: str) -> Optional[Path]:
+from src.catalog import get_pdf_filename, normalize_color
+from src.config import get_day_for_area
+
+def find_pdf_in_dir(provas_dir: Path, target_filename: str) -> Optional[Path]:
     """
-    Encontra o arquivo PDF de caderno de questões correspondente a uma área e cor regulares.
+    Localiza o arquivo PDF no diretório de provas de forma insensível a maiúsculas/minúsculas.
     """
-    day = AREA_TO_DAY.get(area)
-    if not day:
-        raise ValueError(f"Área desconhecida: {area}")
-
-    color_root = color.lower()[:4]  # azul, amar, verd, cinz, bran
-    candidates = []
-
+    target_lower = target_filename.lower()
     for file_path in provas_dir.glob("*.pdf"):
-        fname = file_path.name.lower()
-
-        # Deve ser caderno de questões (CAD) e não gabarito (GAB)
-        if "cad" not in fname or "gab" in fname:
-            continue
-
-        # Primeira aplicação regular (P1)
-        if "p1" not in fname:
-            continue
-
-        # Excluir provas adaptadas e especiais
-        if any(kw in fname for kw in EXCLUDED_TEST_KEYWORDS):
-            continue
-
-        # Deve corresponder ao dia e cor
-        day_pattern = f"dia_{day}"
-        if day_pattern in fname and color_root in fname:
-            candidates.append(file_path)
-
-    if len(candidates) == 1:
-        return candidates[0]
-    elif len(candidates) > 1:
-        # Se houver múltiplos, prefere o que não tem modificadores adicionais
-        exact = [c for c in candidates if not any(w in c.name.lower() for w in ['ampliada', 'ledor', 'libras'])]
-        if len(exact) == 1:
-            return exact[0]
-        return candidates[0]
-
+        if file_path.name.lower() == target_lower:
+            return file_path
+    for file_path in provas_dir.glob("*.PDF"):
+        if file_path.name.lower() == target_lower:
+            return file_path
     return None
 
-def build_exam_pdf_mapping(provas_dir: Path, df_dict: pd.DataFrame) -> Dict[int, Path]:
+def build_exam_pdf_mapping(provas_dir: Path, df_itens: pd.DataFrame, year: int) -> Dict[int, Path]:
     """
-    Constrói o dicionário mapeando CO_PROVA -> Caminho do PDF do caderno.
+    Constrói o dicionário mapeando CO_PROVA -> Caminho do PDF do caderno,
+    utilizando as colunas CO_PROVA, SG_AREA e TX_COR do CSV de itens e o catálogo estático.
     """
     if not provas_dir.exists():
         raise FileNotFoundError(f"Diretório de provas não encontrado em: {provas_dir}")
 
+    # Agrupa por CO_PROVA para obter a combinação única de prova, área e cor
+    exam_groups = df_itens[['CO_PROVA', 'SG_AREA', 'TX_COR']].dropna().drop_duplicates()
+
+    # Se a coluna IN_ITEM_ADAPTADO estiver presente, exclui provas adaptadas
+    if 'IN_ITEM_ADAPTADO' in df_itens.columns:
+        adapted_exams = set(df_itens[df_itens['IN_ITEM_ADAPTADO'] == 1]['CO_PROVA'].unique())
+    else:
+        adapted_exams = set()
+
     mapping: Dict[int, Path] = {}
-    for _, row in df_dict.iterrows():
-        co_prova = int(row['CO_PROVA'])
-        area = row['SG_AREA']
-        color = row['TX_COR']
 
-        pdf_path = match_pdf_for_exam(provas_dir, area, color)
-        if not pdf_path:
-            raise RuntimeError(f"Não foi possível localizar o PDF para CO_PROVA={co_prova}, Área={area}, Cor={color}")
+    for _, row in exam_groups.iterrows():
+        try:
+            co_prova = int(row['CO_PROVA'])
+        except (ValueError, TypeError):
+            continue
 
-        mapping[co_prova] = pdf_path
+        if co_prova in adapted_exams:
+            continue
+
+        area = str(row['SG_AREA']).strip().upper()
+        color = str(row['TX_COR']).strip()
+
+        try:
+            day = get_day_for_area(area, year)
+        except ValueError:
+            continue
+
+        expected_filename = get_pdf_filename(year, day, color)
+        if not expected_filename:
+            # Prova com cor não regular ou sem caderno mapeado
+            continue
+
+        pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+        if pdf_path and pdf_path.exists():
+            mapping[co_prova] = pdf_path
 
     return mapping

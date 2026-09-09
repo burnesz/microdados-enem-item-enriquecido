@@ -19,9 +19,13 @@ from src.config import (
 
 def clean_page_text(text: str) -> str:
     """
-    Remove marcas d'água, códigos de barras e cabeçalhos/rodapés repetitivos da página.
+    Remove marcas d'água, códigos de barras e cabeçalhos/rodapés repetitivos da página,
+    unificando números de questões quebrados em linhas distintas.
     """
-    # Remove marcas d'água do tipo ENEM2024ENEM2024... ou com variações/erros como ENEM20E4
+    # 1. Unifica 'Questão \n 14' em 'Questão 14' antes de qualquer filtro de linhas
+    text = re.sub(r'(QUEST[ÃA]O)\s*[\n\r]+\s*(\d+)', r'\1 \2', text, flags=re.IGNORECASE)
+
+    # 2. Remove marcas d'água do tipo ENEM2024ENEM2024... ou com variações/erros como ENEM20E4
     text = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*){2,}', '', text, flags=re.IGNORECASE)
     # Remove códigos de barras *020325AZ2*
     text = BARCODE_REGEX.sub('', text)
@@ -30,13 +34,13 @@ def clean_page_text(text: str) -> str:
     for line in text.split('\n'):
         s = line.strip()
         # Rodapé com menção a caderno ou dia
-        if re.search(r'CADERNO\s+\d+', s, re.IGNORECASE) and any(c in s.upper() for c in ['AZUL', 'AMARELO', 'VERDE', 'BRANCO', 'CINZA']):
+        if re.search(r'CADERNO\s+\d+', s, re.IGNORECASE) and any(c in s.upper() for c in ['AZUL', 'AMARELO', 'VERDE', 'BRANCO', 'CINZA', 'ROSA']):
             continue
         # Números de página isolados
         if re.match(r'^\d{1,2}$', s):
             continue
         # Cabeçalhos ou rodapés com nome da área e dia
-        if re.search(r'(CIÊNCIAS|MATEMÁTICA|LINGUAGENS)', s, re.IGNORECASE) and ('DIA' in s.upper() or 'CADERNO' in s.upper()):
+        if re.search(r'(CIÊNCIAS|MATEMÁTICA|LINGUAGENS)', s, re.IGNORECASE) and ('DIA' in s.upper() or 'CADERNO' in s.upper() or 'DOMINGO' in s.upper() or 'SÁBADO' in s.upper()):
             continue
         lines.append(line)
 
@@ -89,7 +93,7 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
 
             # Remove qualquer resíduo de marca d'água ou rodapé no final da alternativa
             alt_content = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*)+.*$', '', alt_content, flags=re.IGNORECASE).strip()
-            alt_content = re.sub(r'[•\-–—]?\s*(CIÊNCIAS|MATEMÁTICA|LINGUAGENS).*DIA.*$', '', alt_content, flags=re.IGNORECASE).strip()
+            alt_content = re.sub(r'[•\-–—]?\s*(CIÊNCIAS|MATEMÁTICA|LINGUAGENS).*$', '', alt_content, flags=re.IGNORECASE).strip()
 
             if not alt_content:
                 alt_content = IMAGE_ALT_PLACEHOLDER
@@ -101,7 +105,7 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
         clean_enunciado = " ".join(q_text.split())
         return clean_enunciado, {}
 
-def detect_images_per_question(doc: pymupdf.Document, is_dia_1: bool) -> Set[Tuple[int, Optional[float]]]:
+def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: bool) -> Set[Tuple[int, Optional[float]]]:
     """
     Identifica quais questões no documento PDF contêm imagens/figuras através de coordenadas espaciais.
     """
@@ -123,11 +127,11 @@ def detect_images_per_question(doc: pymupdf.Document, is_dia_1: bool) -> Set[Tup
             current_lang = None
             q_start_y = 40.0
             for b in col_blocks:
-                m = re.search(r'QUEST[ÃA]O\s+(\d+)', b[4])
+                m = re.search(r'QUEST[ÃA]O\s*[\n\r]*\s*(\d+)', b[4], re.IGNORECASE)
                 if m:
                     q_num = int(m.group(1))
                     lang = None
-                    if is_dia_1:
+                    if has_duplicate_languages:
                         if q_num == 1:
                             seen_1 += 1
                         if q_num <= 5:
@@ -193,14 +197,18 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
         raise FileNotFoundError(f"Arquivo PDF não encontrado: {pdf_path}")
 
     doc = pymupdf.open(pdf_path)
-    is_dia_1 = "DIA_1" in pdf_path.name.upper()
-
-    # Detecta imagens nas questões
-    questions_with_spatial_images = detect_images_per_question(doc, is_dia_1)
 
     # Extrai e limpa o texto das páginas
     pages_text = [clean_page_text(doc[p].get_text("text")) for p in range(1, len(doc))]
     full_text = "\n".join(pages_text)
+
+    # Verifica se há ocorrência múltipla das Questões 1 e 2 (indicador real de Inglês/Espanhol)
+    q1_count = len(re.findall(r'(?:^|\n)\s*QUEST[ÃA]O\s+1(?:\D|$)', full_text, flags=re.IGNORECASE))
+    q2_count = len(re.findall(r'(?:^|\n)\s*QUEST[ÃA]O\s+2(?:\D|$)', full_text, flags=re.IGNORECASE))
+    has_duplicate_languages = (q1_count >= 2 and q2_count >= 2)
+
+    # Detecta imagens nas questões
+    questions_with_spatial_images = detect_images_per_question(doc, has_duplicate_languages)
 
     splits = QUESTION_SPLIT_REGEX.split(full_text)
     parsed_questions: Dict[Tuple[int, Optional[float]], Dict[str, Any]] = {}
@@ -210,9 +218,9 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
         q_num = int(splits[i])
         q_text = splits[i + 1]
 
-        # Resolução de língua estrangeira no Dia 1
+        # Resolução de língua estrangeira quando há duplicata real
         lang = None
-        if is_dia_1:
+        if has_duplicate_languages:
             if q_num == 1:
                 seen_1 += 1
             if q_num <= 5:

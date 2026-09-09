@@ -5,16 +5,36 @@ Configurações e constantes para a pipeline de itens do ENEM.
 import re
 from pathlib import Path
 
-# Mapeamento oficial de Áreas do Conhecimento para o Dia de Prova
-AREA_TO_DAY = {
-    'LC': 1,  # Linguagens, Códigos e suas Tecnologias
-    'CH': 1,  # Ciências Humanas e suas Tecnologias
-    'CN': 2,  # Ciências da Natureza e suas Tecnologias
-    'MT': 2   # Matemática e suas Tecnologias
-}
+# Cores regulares oficiais de cadernos de prova (Primeira Aplicação)
+REGULAR_COLORS = ['AZUL', 'AMARELO', 'AMARELA', 'BRANCO', 'BRANCA', 'ROSA', 'CINZA', 'VERDE']
 
-# Cores regulares de cadernos de prova (Primeira Aplicação)
-REGULAR_COLORS = ['AZUL', 'AMARELA', 'VERDE', 'CINZA', 'BRANCA']
+def get_day_for_area(area: str, year: int) -> int:
+    """
+    Retorna o dia de prova correspondente à Área do Conhecimento considerando
+    a mudança histórica de calendário do ENEM em 2017:
+    - 2009 a 2016: Dia 1 (Sábado) = CN, CH; Dia 2 (Domingo) = LC, MT
+    - 2017 a 2024: Dia 1 (1º Domingo) = LC, CH; Dia 2 (2º Domingo) = CN, MT
+    """
+    area = area.upper().strip()
+    if year <= 2016:
+        if area in ('CN', 'CH'):
+            return 1
+        elif area in ('LC', 'MT'):
+            return 2
+    else:
+        if area in ('LC', 'CH'):
+            return 1
+        elif area in ('CN', 'MT'):
+            return 2
+    raise ValueError(f"Área desconhecida '{area}' para o ano {year}")
+
+# Mapeamento padrão (pós-2017) mantido por compatibilidade
+AREA_TO_DAY = {
+    'LC': 1,
+    'CH': 1,
+    'CN': 2,
+    'MT': 2
+}
 
 # Termos que identificam provas não regulares (reaplicações e adaptações)
 EXCLUDED_TEST_KEYWORDS = [
@@ -33,11 +53,11 @@ EXCLUDED_TEST_KEYWORDS = [
 # Expressões regulares para limpeza de ruídos nos PDFs das provas
 WATERMARK_REGEX = re.compile(r'(ENEM\s*\d{4}\s*){2,}', re.IGNORECASE)
 BARCODE_REGEX = re.compile(r'\*[0-9A-Z]+\*')
-RUNNING_FOOTER_REGEX = re.compile(r'CADERNO\s+\d+\s*[-–—]\s*(AZUL|AMARELO|VERDE|BRANCO|CINZA)', re.IGNORECASE)
+RUNNING_FOOTER_REGEX = re.compile(r'CADERNO\s+\d+\s*[-–—]\s*(AZUL|AMARELO|VERDE|BRANCO|CINZA|ROSA)', re.IGNORECASE)
 RUNNING_HEADER_REGEX = re.compile(r'^(CIÊNCIAS|MATEMÁTICA|LINGUAGENS)', re.IGNORECASE)
 
-# Expressão para localizar cabeçalhos de questão
-QUESTION_SPLIT_REGEX = re.compile(r'(?:^|\n)\s*QUEST[ÃA]O\s+(\d+)\s*\t*\n*')
+# Expressão para localizar cabeçalhos de questão (suporta caixa alta/baixa e número em linha separada)
+QUESTION_SPLIT_REGEX = re.compile(r'(?:^|\n)\s*QUEST[ÃA]O\s*[\n\r]*\s*(\d+)\s*', re.IGNORECASE)
 
 # Expressão para linhas que podem iniciar uma alternativa
 ALT_LINE_REGEX = re.compile(r'^\s*([A-E])(?:\t|\.|\)|\s+|$)(.*)$')

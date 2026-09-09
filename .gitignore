@@ -34,3 +34,5 @@ processed/*
 # Sistema operacional
 .DS_Store
 Thumbs.db
+
+AGENTS.md
