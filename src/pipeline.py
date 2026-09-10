@@ -136,8 +136,8 @@ def run_enem_pipeline(
     if df_itens.empty:
         raise ValueError(f"Nenhum item com SG_AREA == '{TARGET_AREA}' encontrado em {csv_path.name}.")
 
-    # 2. Busca dinâmica dos códigos CO_PROVA_MT no Dicionário
-    df_dict_math = parse_math_exam_codes(dict_path)
+    # 2. Busca dinâmica dos códigos CO_PROVA_MT no Dicionário (com reconciliação via CSV)
+    df_dict_math = parse_math_exam_codes(dict_path, csv_path=csv_path)
     print(f"      Códigos identificados no Dicionário ({len(df_dict_math)}):")
     for _, r in df_dict_math.iterrows():
         print(f"       - [{r['TP_APLICACAO']}] Código {r['CO_PROVA']}: {r['TX_COR']} ('{r['DESC_ORIGINAL']}')")

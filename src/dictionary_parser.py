@@ -2,7 +2,7 @@
 Módulo para leitura e interpretação do Dicionário de Dados do ENEM.
 Realiza busca dinâmica pelo atributo CO_PROVA_MT em todas as abas da planilha,
 classificando as provas identificadas em Primeira Aplicação (P1) e Reaplicação/PPL (P2),
-e descartando provas adaptadas e digitais.
+e descartando provas adaptadas e digitais. Trata omissões históricas conhecidas nos dicionários do INEP.
 """
 
 from pathlib import Path
@@ -13,12 +13,30 @@ import pandas as pd
 from src.catalog import normalize_color
 from src.config import ADAPTED_TEST_KEYWORDS, PPL_TEST_KEYWORDS, REGULAR_COLORS, TARGET_AREA
 
-def parse_math_exam_codes(dictionary_path: Path) -> pd.DataFrame:
+# Mapeamento de códigos de provas de Matemática omitidos nas planilhas oficiais de Dicionário do INEP
+KNOWN_DICTIONARY_OMISSIONS = {
+    # 2011: O dicionário do INEP omitiu na variável CO_PROVA_MT a prova de Reaplicação / PPL (código 136, Cinza)
+    136: {
+        'SG_AREA': TARGET_AREA,
+        'CO_PROVA': 136,
+        'TX_COR': 'CINZA',
+        'TP_APLICACAO': 'P2',
+        'DESC_ORIGINAL': 'Cinza (Reaplicação / PPL)'
+    }
+}
+
+def parse_math_exam_codes(
+    dictionary_path: Path,
+    csv_path: Optional[Path] = None
+) -> pd.DataFrame:
     """
     Percorre dinamicamente todas as abas do dicionário de dados (.xlsx), localizando
     a célula que contém a variável 'CO_PROVA_MT'. A partir dessa linha, extrai os códigos
     numéricos de prova, descrições e cores, classificando em P1 (Regular) e P2 (Reaplicação / PPL)
     e descartando provas adaptadas e digitais.
+
+    Caso fornecido 'csv_path', reconcilia e incorpora códigos válidos de Matemática presentes
+    no CSV que foram omitidos na planilha oficial do Dicionário (ex: código 136 em 2011).
 
     Retorna um DataFrame contendo as colunas:
     - SG_AREA: 'MT'
@@ -30,7 +48,7 @@ def parse_math_exam_codes(dictionary_path: Path) -> pd.DataFrame:
     if not dictionary_path.exists():
         raise FileNotFoundError(f"Dicionário não encontrado em: {dictionary_path}")
 
-    wb = openpyxl.load_workbook(dictionary_path, data_only=True)
+    wb = openpyxl.load_workbook(dictionary_path, read_only=True, data_only=True)
     records = []
 
     for sheet_name in wb.sheetnames:
@@ -112,6 +130,27 @@ def parse_math_exam_codes(dictionary_path: Path) -> pd.DataFrame:
             break
 
     wb.close()
+
+    # Reconciliação com omissões conhecidas do INEP (ex: 2011)
+    found_codes = {r['CO_PROVA'] for r in records}
+    
+    # 1. Checa se o dicionário é de 2011 e 136 não está presente
+    if '2011' in dictionary_path.name and 136 not in found_codes:
+        records.append(KNOWN_DICTIONARY_OMISSIONS[136])
+        found_codes.add(136)
+
+    # 2. Se um CSV de itens foi passado, verifica se há códigos conhecidos adicionais
+    if csv_path and csv_path.exists():
+        try:
+            df_csv = pd.read_csv(csv_path, sep=';', encoding='latin1', nrows=5000)
+            if 'SG_AREA' in df_csv.columns and 'CO_PROVA' in df_csv.columns:
+                mt_csv_codes = set(df_csv[df_csv['SG_AREA'] == TARGET_AREA]['CO_PROVA'].dropna().astype(int).unique())
+                for missing_code in (mt_csv_codes - found_codes):
+                    if missing_code in KNOWN_DICTIONARY_OMISSIONS:
+                        records.append(KNOWN_DICTIONARY_OMISSIONS[missing_code])
+                        found_codes.add(missing_code)
+        except Exception:
+            pass
 
     if not records:
         raise RuntimeError(f"Nenhum código de Matemática (CO_PROVA_MT) encontrado em {dictionary_path.name}.")

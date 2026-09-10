@@ -37,6 +37,7 @@ EXAM_PDF_CATALOG: Dict[int, Dict[Union[Tuple[str, int, str], Tuple[int, str]], s
     2010: {
         ('P1', 1, 'AZUL'): 'ENEM_2010_PROVA_GAB_DIA_1_AZUL_1.pdf',
         ('P1', 2, 'AZUL'): 'ENEM_2010_PROVA_GAB_DIA_2_AZUL_7.pdf',
+        ('P2', 2, 'AZUL'): 'ENEM_2010_PROVA_GAB_DIA_2_AZUL_7(2_Aplicação).pdf',
     },
     2011: {
         ('P1', 1, 'BRANCO'): 'ENEM_2011_P1_CAD_03_DIA_1_BRANCO_LEDOR.pdf',

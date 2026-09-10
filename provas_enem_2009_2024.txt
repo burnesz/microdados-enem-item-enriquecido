@@ -16,9 +16,9 @@ ENEM_2009_PROVA_DIA_2_ROSA_8.pdf
 ==================================================
 ENEM 2010
 ==================================================
-ENEM_2010_PROVA_GAB_DIA_1_AZUL_1(2_Aplica‡Æo).pdf
+ENEM_2010_PROVA_GAB_DIA_1_AZUL_1(2_Aplicação).pdf
 ENEM_2010_PROVA_GAB_DIA_1_AZUL_1.pdf
-ENEM_2010_PROVA_GAB_DIA_2_AZUL_7(2_Aplica‡Æo).pdf
+ENEM_2010_PROVA_GAB_DIA_2_AZUL_7(2_Aplicação).pdf
 ENEM_2010_PROVA_GAB_DIA_2_AZUL_7.pdf
 
 ==================================================

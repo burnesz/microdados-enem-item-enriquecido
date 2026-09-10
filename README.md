@@ -94,6 +94,7 @@ O arquivo final exportado em `processed/itens_prova_{ANO}_enriquecido.csv` prese
 | `NU_PARAM_A/B/C`| `float`| INEP | Parâmetros psicométricos da TRI (discriminação, dificuldade, acerto ao acaso) |
 | `CO_PROVA` | `int` | INEP | Código numérico da prova no INEP |
 | `TX_COR` | `str` | INEP | Cor do caderno selecionado |
+| `TP_APLICACAO` | `str` | Enriquecido | Categoria da prova (`REGULAR` para 1ª aplicação ou `REAPLICACAO_PPL` para 2ª aplicação) |
 | `REF_ARQUIVO_PDF` | `str` | Enriquecido | Nome do PDF físico de onde o item foi extraído (identifica P1 vs P2) |
 | `DESC_ENUNCIADO` | `str` | Enriquecido | Texto integral limpo do enunciado da questão |
 | `DESC_ALTER_A` | `str` | Enriquecido | Texto da alternativa A |
@@ -109,11 +110,11 @@ O arquivo final exportado em `processed/itens_prova_{ANO}_enriquecido.csv` prese
 
 ## 📈 Cobertura Histórica de Provas (Matemática - Dia 2)
 
-- **Edições com Reaplicação / PPL disponível (ex: 2017 a 2024, 2011, 2015, 2016)**:
+- **Edições com Reaplicação / PPL disponível (2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017, 2016, 2015, 2011, 2010)**:
   - 1 cor da Prova Regular (P1): 45 questões.
   - 1 cor da Prova PPL / Reaplicação (P2): 45 questões.
-  - **Total**: ~90 questões distintas por edição.
-- **Edições sem Reaplicação / PPL (ou onde apenas o caderno regular está disponível)**:
+  - **Total**: 90 questões distintas por edição.
+- **Edições sem Reaplicação / PPL no acervo oficial (2014, 2013, 2012, 2009)**:
   - 1 cor da Prova Regular (P1): 45 questões.
   - **Total**: 45 questões por edição.
 - **Formato de Saída**: CSV UTF-8 com BOM (`utf-8-sig`) e delimitador `;`, garantindo abertura direta no Excel e compatibilidade com ferramentas de ciência de dados.
