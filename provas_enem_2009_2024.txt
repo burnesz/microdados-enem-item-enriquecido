@@ -40,6 +40,7 @@ caderno_enem2012_dom_amarelo.pdf
 caderno_enem2012_dom_azul.pdf
 caderno_enem2012_dom_cinza.pdf
 caderno_enem2012_dom_rosa.pdf
+caderno_enem2012_dom_cinza_p2.pdf
 caderno_enem2012_sab_amarelo.pdf
 caderno_enem2012_sab_azul.pdf
 caderno_enem2012_sab_branco.pdf
@@ -64,6 +65,7 @@ Caderno5_Amarelo_Dom.pdf
 Caderno6_Cinza_Dom.pdf
 Caderno7_Azul_Dom.pdf
 Caderno8_Rosa_Dom.pdf
+Caderno6_Cinza_Dom_p2.pdf
 Gab_Caderno1_Azul_Sab.pdf
 Gab_Caderno2_Amarelo_Sab.pdf
 Gab_Caderno3_Branco_Sab.pdf
@@ -82,6 +84,7 @@ Caderno3_Branco_Sab.pdf
 Caderno4_Rosa_Sab.pdf
 Caderno5_Amarelo_Dom.pdf
 Caderno6_Cinza_Dom.pdf
+Caderno6_Cinza_Dom_p2.pdf
 Caderno7_Azul_Dom.pdf
 Caderno8_Rosa_Dom.pdf
 Gab_Caderno1_Azul_Sab.pdf

@@ -53,6 +53,7 @@ EXAM_PDF_CATALOG: Dict[int, Dict[Union[Tuple[str, int, str], Tuple[int, str]], s
         ('P1', 2, 'AZUL'): 'caderno_enem2012_dom_azul.pdf',
         ('P1', 2, 'CINZA'): 'caderno_enem2012_dom_cinza.pdf',
         ('P1', 2, 'ROSA'): 'caderno_enem2012_dom_rosa.pdf',
+        ('P2', 2, 'CINZA'): 'caderno_enem2012_dom_cinza_p2.pdf',
     },
     2013: {
         ('P1', 1, 'AZUL'): 'Caderno1_Azul_Sab.pdf',
@@ -63,6 +64,7 @@ EXAM_PDF_CATALOG: Dict[int, Dict[Union[Tuple[str, int, str], Tuple[int, str]], s
         ('P1', 2, 'CINZA'): 'Caderno6_Cinza_Dom.pdf',
         ('P1', 2, 'AZUL'): 'Caderno7_Azul_Dom.pdf',
         ('P1', 2, 'ROSA'): 'Caderno8_Rosa_Dom.pdf',
+        ('P2', 2, 'CINZA'): 'Caderno6_Cinza_Dom_p2.pdf',
     },
     2014: {
         ('P1', 1, 'AZUL'): 'Caderno1_Azul_Sab.pdf',
@@ -73,6 +75,7 @@ EXAM_PDF_CATALOG: Dict[int, Dict[Union[Tuple[str, int, str], Tuple[int, str]], s
         ('P1', 2, 'CINZA'): 'Caderno6_Cinza_Dom.pdf',
         ('P1', 2, 'AZUL'): 'Caderno7_Azul_Dom.pdf',
         ('P1', 2, 'ROSA'): 'Caderno8_Rosa_Dom.pdf',
+        ('P2', 2, 'CINZA'): 'Caderno6_Cinza_Dom_p2.pdf',
     },
     2015: {
         ('P1', 1, 'AZUL'): 'Caderno1_Azul_Sab.pdf',

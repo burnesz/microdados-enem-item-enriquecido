@@ -1,4 +1,4 @@
- """
+"""
 Ponto de entrada para execução da pipeline de dados do ENEM.
 
 Uso:

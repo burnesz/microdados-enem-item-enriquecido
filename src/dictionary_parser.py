@@ -22,6 +22,31 @@ KNOWN_DICTIONARY_OMISSIONS = {
         'TX_COR': 'CINZA',
         'TP_APLICACAO': 'P2',
         'DESC_ORIGINAL': 'Cinza (Reaplicação / PPL)'
+    },
+    # 2012: O dicionário rotulou 156 como 'CINZA (LEDOR)', mas nos microdados de itens e no acervo
+    # de provas representa o caderno regular de Reaplicação / PPL (código 156, Cinza)
+    156: {
+        'SG_AREA': TARGET_AREA,
+        'CO_PROVA': 156,
+        'TX_COR': 'CINZA',
+        'TP_APLICACAO': 'P2',
+        'DESC_ORIGINAL': 'Cinza (Reaplicação / PPL)'
+    },
+    # 2013: O dicionário do INEP omitiu na variável CO_PROVA_MT a prova de Reaplicação / PPL (código 186, Cinza)
+    186: {
+        'SG_AREA': TARGET_AREA,
+        'CO_PROVA': 186,
+        'TX_COR': 'CINZA',
+        'TP_APLICACAO': 'P2',
+        'DESC_ORIGINAL': 'Cinza (Reaplicação / PPL)'
+    },
+    # 2014: Fallback de segurança para Reaplicação / PPL (código 214, Cinza)
+    214: {
+        'SG_AREA': TARGET_AREA,
+        'CO_PROVA': 214,
+        'TX_COR': 'CINZA',
+        'TP_APLICACAO': 'P2',
+        'DESC_ORIGINAL': 'Cinza (Reaplicação / PPL)'
     }
 }
 
@@ -131,13 +156,19 @@ def parse_math_exam_codes(
 
     wb.close()
 
-    # Reconciliação com omissões conhecidas do INEP (ex: 2011)
+    # Reconciliação com omissões conhecidas do INEP (ex: 2011, 2012, 2013)
     found_codes = {r['CO_PROVA'] for r in records}
     
-    # 1. Checa se o dicionário é de 2011 e 136 não está presente
-    if '2011' in dictionary_path.name and 136 not in found_codes:
-        records.append(KNOWN_DICTIONARY_OMISSIONS[136])
-        found_codes.add(136)
+    # 1. Checagem direta por ano no nome do dicionário
+    year_omissions = {
+        '2011': 136,
+        '2012': 156,
+        '2013': 186
+    }
+    for yr_str, om_code in year_omissions.items():
+        if yr_str in dictionary_path.name and om_code not in found_codes:
+            records.append(KNOWN_DICTIONARY_OMISSIONS[om_code])
+            found_codes.add(om_code)
 
     # 2. Se um CSV de itens foi passado, verifica se há códigos conhecidos adicionais
     if csv_path and csv_path.exists():
