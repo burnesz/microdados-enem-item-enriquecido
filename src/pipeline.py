@@ -1,5 +1,6 @@
 """
 Orquestrador principal da pipeline de extração e enriquecimento dos itens do ENEM.
+Focado exclusivamente na área de Matemática (MT) com resolução dinâmica pelo Dicionário.
 """
 
 from pathlib import Path
@@ -7,43 +8,88 @@ from typing import Dict, Optional, Tuple, Any
 import time
 import pandas as pd
 
-from src.pdf_matcher import build_exam_pdf_mapping
+from src.config import TARGET_AREA
+from src.dictionary_parser import parse_math_exam_codes
+from src.pdf_matcher import build_math_exam_pdf_mapping
 from src.pdf_extractor import extract_questions_from_pdf
 
-def locate_year_paths(root_dir: Path, year: int) -> Tuple[Path, Path]:
+def locate_year_paths(root_dir: Path, year: int) -> Tuple[Path, Path, Path]:
     """
-    Localiza o arquivo CSV de itens e a pasta de provas em PDF para o ano informado,
-    resolvendo variações de maiúsculas/minúsculas e pastas aninhadas.
+    Localiza o arquivo CSV de itens, a pasta de provas em PDF e a planilha do dicionário (.xlsx)
+    para o ano informado, suportando pastas aninhadas e variações de maiúsculas/minúsculas.
     """
     year_dir = root_dir / "raw" / f"microdados_enem_{year}"
     if not year_dir.exists():
         raise FileNotFoundError(f"Diretório do ano {year} não encontrado em: {year_dir}")
 
-    # Verifica se há pasta aninhada (ex: raw/microdados_enem_2023/microdados_enem_2023)
     nested = year_dir / f"microdados_enem_{year}"
     search_dir = nested if nested.is_dir() else year_dir
 
     # 1. Localização do CSV de Itens
     csv_path = None
-    for p in search_dir.rglob("*"):
-        if p.is_file() and p.suffix.lower() == ".csv" and "ITENS" in p.name.upper():
-            csv_path = p
+    candidate_dirs = [search_dir / "DADOS", search_dir]
+    for d in candidate_dirs:
+        if d.is_dir():
+            for p in d.iterdir():
+                if p.is_file() and p.suffix.lower() == ".csv" and "ITENS" in p.name.upper():
+                    csv_path = p
+                    break
+        if csv_path:
             break
+
+    if not csv_path:
+        for p in search_dir.glob("*/*.csv"):
+            if "ITENS" in p.name.upper():
+                csv_path = p
+                break
 
     if not csv_path:
         raise FileNotFoundError(f"Arquivo CSV de itens de prova não encontrado em {search_dir}")
 
-    # 2. Localização do diretório de Provas
+    # 2. Localização do Dicionário (.xlsx)
+    dict_path = None
+    dict_candidate_dirs = [
+        search_dir / "DICIONÁRIO",
+        search_dir / "DICIONARIO",
+        search_dir / "Dicionário",
+        search_dir / "ANEXOS",
+        search_dir
+    ]
+    for d in dict_candidate_dirs:
+        if d.is_dir():
+            for p in d.iterdir():
+                if p.is_file() and p.suffix.lower() == ".xlsx" and not p.name.startswith("~$"):
+                    dict_path = p
+                    break
+        if dict_path:
+            break
+
+    if not dict_path:
+        for p in search_dir.glob("*/*.xlsx"):
+            if not p.name.startswith("~$"):
+                dict_path = p
+                break
+
+    if not dict_path:
+        raise FileNotFoundError(f"Arquivo de Dicionário (.xlsx) não encontrado em {search_dir}")
+
+    # 3. Localização do diretório de Provas
     provas_dir = None
-    for p in search_dir.rglob("*"):
+    for p in search_dir.iterdir():
         if p.is_dir() and "PROVAS" in p.name.upper():
             provas_dir = p
             break
 
     if not provas_dir:
+        for p in search_dir.glob("*/PROVAS*"):
+            if p.is_dir():
+                provas_dir = p
+                break
+
+    if not provas_dir:
         raise FileNotFoundError(f"Diretório de cadernos de prova (PROVAS E GABARITOS) não encontrado em {search_dir}")
 
-    return csv_path, provas_dir
+    return csv_path, provas_dir, dict_path
 
 def run_enem_pipeline(
     year: int = 2024,
@@ -51,44 +97,62 @@ def run_enem_pipeline(
     output_dir: Optional[Path] = None
 ) -> pd.DataFrame:
     """
-    Executa a pipeline completa para o ano especificado baseando-se exclusivamente
-    no catálogo estático de cadernos e nas colunas estruturadas do arquivo ITENS_PROVA.
+    Executa a pipeline completa de Matemática para o ano especificado:
+    1. Localiza CSV de itens, pasta de provas e Dicionário de Dados (.xlsx).
+    2. Lê o Dicionário dinamicamente para extrair os códigos CO_PROVA_MT regulares da 1ª Aplicação.
+    3. Cruza os códigos com o catálogo estático de PDFs para Dia 2.
+    4. Filtra ITENS_PROVA_{ANO}.csv mantendo apenas SG_AREA == 'MT' e CO_PROVA regulares mapeados.
+    5. Extrai enunciados, alternativas (A-E) e presença de imagem via PyMuPDF.
+    6. Exporta a base enriquecida em processed/itens_prova_{ANO}_enriquecido.csv.
     """
     start_time = time.time()
     root_dir = base_dir or Path(__file__).resolve().parent.parent
 
     print(f"\n========================================================")
-    print(f" Iniciando Pipeline ENEM - Ano: {year}")
+    print(f" Iniciando Pipeline ENEM (Matemática - MT) - Ano: {year}")
     print(f" Diretório base: {root_dir}")
     print(f"========================================================\n")
 
-    csv_path, provas_dir = locate_year_paths(root_dir, year)
+    csv_path, provas_dir, dict_path = locate_year_paths(root_dir, year)
     print(f"[1/4] Localizados arquivos de entrada:")
     print(f"      - CSV de Itens: {csv_path.name}")
-    print(f"      - Pasta de Provas: {provas_dir}")
+    print(f"      - Dicionário:   {dict_path.name}")
+    print(f"      - Pasta Provas: {provas_dir}")
 
-    # Carrega dados estruturados do CSV
-    print(f"\n[2/4] Carregando e mapeando itens de {csv_path.name}...")
+    # 1. Carrega dados estruturados do CSV de itens
+    print(f"\n[2/4] Carregando itens e mapeando provas via Dicionário...")
     try:
-        df_itens = pd.read_csv(csv_path, sep=';', encoding='latin1')
+        df_itens_all = pd.read_csv(csv_path, sep=';', encoding='latin1')
     except Exception:
-        df_itens = pd.read_csv(csv_path, sep=',', encoding='latin1')
+        df_itens_all = pd.read_csv(csv_path, sep=',', encoding='latin1')
 
-    print(f"      Total de linhas originais no CSV: {len(df_itens)}")
+    print(f"      Total de linhas no CSV original: {len(df_itens_all)}")
 
-    # Mapeamento determinístico de CO_PROVA -> PDF via catálogo estático
-    exam_pdf_map = build_exam_pdf_mapping(provas_dir, df_itens, year)
+    # Filtra estritamente para Matemática (MT)
+    df_itens = df_itens_all[df_itens_all['SG_AREA'] == TARGET_AREA].copy()
+    print(f"      Total de linhas de Matemática (SG_AREA == '{TARGET_AREA}'): {len(df_itens)}")
+    if df_itens.empty:
+        raise ValueError(f"Nenhum item com SG_AREA == '{TARGET_AREA}' encontrado em {csv_path.name}.")
+
+    # 2. Busca dinâmica dos códigos CO_PROVA_MT no Dicionário
+    df_dict_math = parse_math_exam_codes(dict_path)
+    print(f"      Códigos regulares identificados no Dicionário ({len(df_dict_math)}):")
+    for _, r in df_dict_math.iterrows():
+        print(f"       - Código {r['CO_PROVA']}: {r['TX_COR']} ('{r['DESC_ORIGINAL']}')")
+
+    # 3. Mapeamento determinístico de CO_PROVA -> PDF via catálogo estático (Dia 2)
+    exam_pdf_map = build_math_exam_pdf_mapping(provas_dir, df_dict_math, year)
     unique_pdfs = sorted(list(set(exam_pdf_map.values())))
-    print(f"      Total de códigos de prova regulares mapeados: {len(exam_pdf_map)}")
+    print(f"      Total de códigos de prova regulares mapeados a PDFs físicos: {len(exam_pdf_map)}")
     print(f"      Total de arquivos PDF identificados: {len(unique_pdfs)}")
     for pdf_path in unique_pdfs:
         print(f"       - {pdf_path.name}")
 
     if not unique_pdfs:
-        raise RuntimeError(f"Nenhum arquivo PDF correspondente aos itens do ano {year} foi localizado em {provas_dir}.")
+        raise RuntimeError(f"Nenhum arquivo PDF correspondente aos cadernos de Matemática de {year} foi localizado em {provas_dir}.")
 
-    # Extração de conteúdo dos PDFs
-    print(f"\n[3/4] Extraindo enunciados, alternativas e imagens dos PDFs...")
+    # 4. Extração de conteúdo dos PDFs via PyMuPDF
+    print(f"\n[3/4] Extraindo enunciados, alternativas e imagens dos PDFs de Matemática...")
     pdf_cache: Dict[str, Dict[Tuple[int, Optional[float]], Dict[str, Any]]] = {}
     for pdf_path in unique_pdfs:
         print(f"      Processando {pdf_path.name}...")
@@ -96,11 +160,11 @@ def run_enem_pipeline(
         pdf_cache[pdf_path.name] = extracted
         print(f"      -> {len(extracted)} questões extraídas.")
 
-    # Enriquecimento dos dados
-    print(f"\n[4/4] Enriquecendo e estruturando dados tabulares...")
+    # 5. Enriquecimento dos dados
+    print(f"\n[4/4] Enriquecendo e estruturando dados tabulares de Matemática...")
     regular_codes = set(exam_pdf_map.keys())
     df_reg = df_itens[df_itens['CO_PROVA'].isin(regular_codes)].copy()
-    print(f"      Total de itens regulares a enriquecer: {len(df_reg)}")
+    print(f"      Total de itens de Matemática a enriquecer: {len(df_reg)}")
 
     ref_pdf_list = []
     enunciado_list = []
@@ -112,7 +176,6 @@ def run_enem_pipeline(
     tem_imagem_list = []
 
     matches_count = 0
-
     has_tp_lingua = ('TP_LINGUA' in df_reg.columns)
 
     for _, row in df_reg.iterrows():
@@ -129,13 +192,24 @@ def run_enem_pipeline(
         ref_pdf_list.append(pdf_name)
 
         q_dict = pdf_cache.get(pdf_name, {})
-        q_info = q_dict.get((c_pos, t_lang_key))
 
-        # Fallback de chave caso haja divergência no indicador neutro
+        # Resolução de posição no PDF (suporta anos como 2017 onde CO_POSICAO é 1..45 mas no caderno é 136..180)
+        target_pos = c_pos
+        if target_pos <= 45 and not any(k[0] == target_pos for k in q_dict.keys()):
+            if any(k[0] == target_pos + 135 for k in q_dict.keys()):
+                target_pos = target_pos + 135
+            elif any(k[0] == target_pos + 45 for k in q_dict.keys()):
+                target_pos = target_pos + 45
+            elif any(k[0] == target_pos + 90 for k in q_dict.keys()):
+                target_pos = target_pos + 90
+
+        q_info = q_dict.get((target_pos, t_lang_key))
+
+        # Fallbacks de chave
         if not q_info and t_lang_key is not None:
-            q_info = q_dict.get((c_pos, None))
+            q_info = q_dict.get((target_pos, None))
         if not q_info and t_lang_key is None:
-            q_info = q_dict.get((c_pos, 0.0))
+            q_info = q_dict.get((target_pos, 0.0))
 
         if q_info:
             matches_count += 1
@@ -173,7 +247,7 @@ def run_enem_pipeline(
 
     elapsed = time.time() - start_time
     print(f"\n========================================================")
-    print(f" PIPELINE CONCLUÍDA COM SUCESSO!")
+    print(f" PIPELINE DE MATEMÁTICA CONCLUÍDA COM SUCESSO!")
     print(f" Itens processados: {len(df_reg)}")
     print(f" Taxa de correspondência: {matches_count}/{len(df_reg)} ({matches_count/len(df_reg)*100:.1f}%)")
     print(f" Itens com imagem identificada: {df_reg['IN_ITEM_IMAGEM'].sum()} ({df_reg['IN_ITEM_IMAGEM'].mean()*100:.1f}%)")

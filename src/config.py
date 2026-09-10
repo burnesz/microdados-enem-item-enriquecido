@@ -36,18 +36,27 @@ AREA_TO_DAY = {
     'MT': 2
 }
 
-# Termos que identificam provas não regulares (reaplicações e adaptações)
+# Área e dia alvo para extração focada em Matemática
+TARGET_AREA = 'MT'
+MATH_EXAM_DAY = 2
+
+# Termos que identificam provas não regulares (reaplicações, PPL, digital e adaptações)
 EXCLUDED_TEST_KEYWORDS = [
     'reaplica',
-    'adaptada',
+    'ppl',
+    'oportunidade',
+    'digital',
+    'adaptad',
     'ledor',
-    'braile',
-    'libras',
-    'ampliada',
-    'superampliada',
+    'brail',
+    'ampliad',
+    'superampliad',
     'leitor tela',
     'dosvox',
-    'nvda'
+    'nvda',
+    'libras',
+    'videoprova',
+    'especial'
 ]
 
 # Expressões regulares para limpeza de ruídos nos PDFs das provas

@@ -11,16 +11,57 @@ from src.config import get_day_for_area
 
 def find_pdf_in_dir(provas_dir: Path, target_filename: str) -> Optional[Path]:
     """
-    Localiza o arquivo PDF no diretório de provas de forma insensível a maiúsculas/minúsculas.
+    Localiza o arquivo PDF no diretório de provas de forma insensível a maiúsculas/minúsculas,
+    pesquisando inicialmente no diretório raiz e recursivamente em subpastas caso necessário.
     """
     target_lower = target_filename.lower()
+
+    # 1. Busca direta no diretório de provas
     for file_path in provas_dir.glob("*.pdf"):
         if file_path.name.lower() == target_lower:
             return file_path
     for file_path in provas_dir.glob("*.PDF"):
         if file_path.name.lower() == target_lower:
             return file_path
+
+    # 2. Busca recursiva (útil para anos como 2017 com subpastas P1/02_Domingo...)
+    for file_path in provas_dir.rglob("*.pdf"):
+        if file_path.name.lower() == target_lower:
+            return file_path
+    for file_path in provas_dir.rglob("*.PDF"):
+        if file_path.name.lower() == target_lower:
+            return file_path
+
     return None
+
+def build_math_exam_pdf_mapping(provas_dir: Path, df_dict_math: pd.DataFrame, year: int) -> Dict[int, Path]:
+    """
+    Constrói o mapeamento CO_PROVA -> Caminho do PDF do caderno para a área de Matemática,
+    cruzando os pares (CO_PROVA, TX_COR) obtidos dinamicamente do Dicionário de Dados
+    com o Catálogo Estático Oficial de PDFs (sempre Dia 2).
+    """
+    if not provas_dir.exists():
+        raise FileNotFoundError(f"Diretório de provas não encontrado em: {provas_dir}")
+
+    mapping: Dict[int, Path] = {}
+    day = 2  # Prova de Matemática ocorre invariavelmente no Dia 2
+
+    for _, row in df_dict_math.iterrows():
+        try:
+            co_prova = int(row['CO_PROVA'])
+        except (ValueError, TypeError):
+            continue
+
+        color = str(row['TX_COR']).strip()
+        expected_filename = get_pdf_filename(year, day, color)
+        if not expected_filename:
+            continue
+
+        pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+        if pdf_path and pdf_path.exists():
+            mapping[co_prova] = pdf_path
+
+    return mapping
 
 def build_exam_pdf_mapping(provas_dir: Path, df_itens: pd.DataFrame, year: int) -> Dict[int, Path]:
     """
@@ -30,10 +71,8 @@ def build_exam_pdf_mapping(provas_dir: Path, df_itens: pd.DataFrame, year: int) 
     if not provas_dir.exists():
         raise FileNotFoundError(f"Diretório de provas não encontrado em: {provas_dir}")
 
-    # Agrupa por CO_PROVA para obter a combinação única de prova, área e cor
     exam_groups = df_itens[['CO_PROVA', 'SG_AREA', 'TX_COR']].dropna().drop_duplicates()
 
-    # Se a coluna IN_ITEM_ADAPTADO estiver presente, exclui provas adaptadas
     if 'IN_ITEM_ADAPTADO' in df_itens.columns:
         adapted_exams = set(df_itens[df_itens['IN_ITEM_ADAPTADO'] == 1]['CO_PROVA'].unique())
     else:
@@ -60,7 +99,6 @@ def build_exam_pdf_mapping(provas_dir: Path, df_itens: pd.DataFrame, year: int) 
 
         expected_filename = get_pdf_filename(year, day, color)
         if not expected_filename:
-            # Prova com cor não regular ou sem caderno mapeado
             continue
 
         pdf_path = find_pdf_in_dir(provas_dir, expected_filename)

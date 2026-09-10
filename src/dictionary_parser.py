@@ -1,79 +1,114 @@
 """
 Módulo para leitura e interpretação do Dicionário de Dados do ENEM.
+Realiza busca dinâmica pelo atributo CO_PROVA_MT em todas as abas da planilha.
 """
 
 from pathlib import Path
 from typing import Dict, List, Optional
+import openpyxl
 import pandas as pd
-from src.config import EXCLUDED_TEST_KEYWORDS, REGULAR_COLORS
 
-def parse_dictionary(dictionary_path: Path, year: int) -> pd.DataFrame:
+from src.catalog import normalize_color
+from src.config import EXCLUDED_TEST_KEYWORDS, REGULAR_COLORS, TARGET_AREA
+
+def parse_math_exam_codes(dictionary_path: Path) -> pd.DataFrame:
     """
-    Lê o dicionário de microdados (.xlsx) e extrai o mapeamento de CO_PROVA
-    para cada Área do Conhecimento e Cor de Caderno regular.
+    Percorre dinamicamente todas as abas do dicionário de dados (.xlsx), localizando
+    a célula que contém a variável 'CO_PROVA_MT'. A partir dessa linha, extrai os códigos
+    numéricos de prova e descrições/cores, filtrando provas adaptadas e reaplicações/PPL.
+
+    Retorna um DataFrame contendo as colunas:
+    - SG_AREA: 'MT'
+    - CO_PROVA: int (código da prova)
+    - TX_COR: str (cor padronizada, ex: 'AZUL', 'AMARELO', 'CINZA', 'ROSA', 'VERDE')
+    - DESC_ORIGINAL: str (descrição original no dicionário)
     """
     if not dictionary_path.exists():
         raise FileNotFoundError(f"Dicionário não encontrado em: {dictionary_path}")
 
-    # Identifica a aba correspondente a RESULTADOS
-    excel_file = pd.ExcelFile(dictionary_path)
-    target_sheet = None
-    for sheet in excel_file.sheet_names:
-        if "RESULTADOS" in sheet.upper():
-            target_sheet = sheet
-            break
-
-    if not target_sheet:
-        raise ValueError(f"Aba de resultados não encontrada no dicionário: {excel_file.sheet_names}")
-
-    df_dict = pd.read_excel(dictionary_path, sheet_name=target_sheet)
-
-    area_cols = ['CO_PROVA_CN', 'CO_PROVA_CH', 'CO_PROVA_LC', 'CO_PROVA_MT']
+    wb = openpyxl.load_workbook(dictionary_path, data_only=True)
     records = []
-    curr_area = None
 
-    for _, row in df_dict.iterrows():
-        val_col0 = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
 
-        # Verifica se inicia uma nova variável de prova
-        for ac in area_cols:
-            if ac in val_col0:
-                curr_area = ac.replace('CO_PROVA_', '')
+        target_row_idx = None
+        for r_idx, row in enumerate(rows):
+            if any(cell and 'CO_PROVA_MT' in str(cell).strip().upper() for cell in row):
+                target_row_idx = r_idx
                 break
 
-        if curr_area:
-            val_code = row.iloc[2]
-            val_desc = str(row.iloc[3]).strip() if pd.notna(row.iloc[3]) else ""
+        if target_row_idx is None:
+            continue
 
-            try:
-                code = int(val_code)
-                desc_lower = val_desc.lower()
+        # Itera pelas linhas a partir da posição da variável
+        for r_idx in range(target_row_idx, len(rows)):
+            row = rows[r_idx]
+            if not row or all(v is None for v in row):
+                continue
 
-                # Verifica se é prova regular (não adaptada e não reaplicação)
+            # Se ultrapassou a linha inicial e começou uma nova variável (CO_, TX_, TP_, IN_, NU_, SG_)
+            if r_idx > target_row_idx:
+                first_val = next((c for c in row if c is not None), None)
+                if first_val:
+                    first_str = str(first_val).strip().upper()
+                    if any(first_str.startswith(p) for p in ['CO_', 'TX_', 'TP_', 'IN_', 'NU_', 'SG_']):
+                        break
+
+            # Extrai candidato a código (inteiro) e descrição (texto)
+            code = None
+            desc = None
+            for cell in row:
+                if cell is None:
+                    continue
+                if code is None:
+                    try:
+                        iv = int(cell)
+                        if 1 <= iv <= 99999:
+                            code = iv
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                if code is not None and desc is None:
+                    if isinstance(cell, str) and cell.strip():
+                        desc = cell.strip()
+                        break
+
+            if code is not None and desc is not None:
+                desc_lower = desc.lower()
+
+                # Verifica se é prova excluída (reaplicação, adaptação, digital, etc.)
                 is_excluded = any(kw in desc_lower for kw in EXCLUDED_TEST_KEYWORDS)
 
-                # Identifica cor padronizada
+                # Identifica cor padronizada oficial
                 standard_color = None
                 for col in REGULAR_COLORS:
-                    if desc_lower.startswith(col.lower()) or desc_lower == col.lower():
-                        standard_color = col
+                    c_low = col.lower()
+                    if desc_lower.startswith(c_low) or desc_lower == c_low or f" {c_low}" in desc_lower:
+                        standard_color = normalize_color(col)
                         break
 
                 if not is_excluded and standard_color is not None:
                     records.append({
-                        'SG_AREA': curr_area,
+                        'SG_AREA': TARGET_AREA,
                         'CO_PROVA': code,
                         'TX_COR': standard_color,
-                        'DESC_ORIGINAL': val_desc,
-                        'IS_REGULAR': True
+                        'DESC_ORIGINAL': desc
                     })
-            except (ValueError, TypeError):
-                # Se mudou de variável (linha não vazia na primeira coluna), reseta
-                if pd.notna(row.iloc[0]) and not any(ac in str(row.iloc[0]) for ac in area_cols):
-                    curr_area = None
 
-    result_df = pd.DataFrame(records)
-    if result_df.empty:
-        raise RuntimeError(f"Nenhum código de prova regular encontrado no dicionário para o ano {year}.")
+        if records:
+            break
 
-    return result_df
+    wb.close()
+
+    if not records:
+        raise RuntimeError(f"Nenhum código regular de Matemática (CO_PROVA_MT) encontrado em {dictionary_path.name}.")
+
+    return pd.DataFrame(records)
+
+def parse_dictionary(dictionary_path: Path, year: Optional[int] = None) -> pd.DataFrame:
+    """
+    Função de compatibilidade que invoca a leitura dos códigos de Matemática.
+    """
+    return parse_math_exam_codes(dictionary_path)
