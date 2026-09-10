@@ -1,13 +1,15 @@
 """
 Módulo para mapeamento determinístico dos arquivos PDF de prova utilizando o catálogo oficial.
+Aplica a regra de escopo: seleciona exatamente 1 cor de prova regular (P1) e 1 cor de prova
+de reaplicação/PPL (P2) por edição de Matemática.
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
 
 from src.catalog import get_pdf_filename, normalize_color
-from src.config import get_day_for_area
+from src.config import PREFERRED_COLORS, get_day_for_area
 
 def find_pdf_in_dir(provas_dir: Path, target_filename: str) -> Optional[Path]:
     """
@@ -34,39 +36,150 @@ def find_pdf_in_dir(provas_dir: Path, target_filename: str) -> Optional[Path]:
 
     return None
 
-def build_math_exam_pdf_mapping(provas_dir: Path, df_dict_math: pd.DataFrame, year: int) -> Dict[int, Path]:
+def build_math_exam_pdf_mapping(
+    provas_dir: Path,
+    df_dict_math: pd.DataFrame,
+    year: int
+) -> Dict[int, Path]:
     """
-    Constrói o mapeamento CO_PROVA -> Caminho do PDF do caderno para a área de Matemática,
-    cruzando os pares (CO_PROVA, TX_COR) obtidos dinamicamente do Dicionário de Dados
-    com o Catálogo Estático Oficial de PDFs (sempre Dia 2).
+    Seleciona deterministicamente exatamente 1 cor de caderno regular (P1)
+    e 1 cor de caderno de reaplicação/PPL (P2) para a área de Matemática (Dia 2).
+
+    Retorna um dicionário mapeando CO_PROVA -> Path_do_PDF_Fisico.
+    """
+    detailed_map = build_selected_math_exams(provas_dir, df_dict_math, year)
+    return {co_prova: info['pdf_path'] for co_prova, info in detailed_map.items()}
+
+def build_selected_math_exams(
+    provas_dir: Path,
+    df_dict_math: pd.DataFrame,
+    year: int
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Executa a seleção unária determinística de cadernos de prova para Matemática (Dia 2):
+    1. Seleciona 1 cor de Primeira Aplicação Regular (P1).
+    2. Seleciona 1 cor de Reaplicação / PPL (P2) se disponível no dicionário e no acervo.
+
+    Retorna um dicionário:
+    {
+        CO_PROVA: {
+            'pdf_path': Path,
+            'tp_aplicacao': 'REGULAR' ou 'REAPLICACAO_PPL',
+            'app_key': 'P1' ou 'P2',
+            'tx_cor': str,
+            'desc_original': str
+        }
+    }
     """
     if not provas_dir.exists():
         raise FileNotFoundError(f"Diretório de provas não encontrado em: {provas_dir}")
 
-    mapping: Dict[int, Path] = {}
-    day = 2  # Prova de Matemática ocorre invariavelmente no Dia 2
+    selected: Dict[int, Dict[str, Any]] = {}
+    day = 2  # Matemática ocorre sempre no Dia 2
 
-    for _, row in df_dict_math.iterrows():
-        try:
+    # 1. Seleciona 1 Caderno Regular (P1)
+    df_p1 = df_dict_math[df_dict_math['TP_APLICACAO'] == 'P1']
+    p1_chosen = False
+
+    for color in PREFERRED_COLORS:
+        matching_rows = df_p1[df_p1['TX_COR'] == color]
+        if matching_rows.empty:
+            continue
+
+        for _, row in matching_rows.iterrows():
             co_prova = int(row['CO_PROVA'])
-        except (ValueError, TypeError):
+            expected_filename = get_pdf_filename(year, day, color, application='P1')
+            if not expected_filename:
+                continue
+
+            pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+            if pdf_path and pdf_path.exists():
+                selected[co_prova] = {
+                    'pdf_path': pdf_path,
+                    'tp_aplicacao': 'REGULAR',
+                    'app_key': 'P1',
+                    'tx_cor': color,
+                    'desc_original': row.get('DESC_ORIGINAL', '')
+                }
+                p1_chosen = True
+                break
+
+        if p1_chosen:
+            break
+
+    # Fallback para P1 se nenhuma das cores preferidas funcionou: pega qualquer cor de P1 disponível
+    if not p1_chosen:
+        for _, row in df_p1.iterrows():
+            co_prova = int(row['CO_PROVA'])
+            color = str(row['TX_COR']).strip()
+            expected_filename = get_pdf_filename(year, day, color, application='P1')
+            if not expected_filename:
+                continue
+            pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+            if pdf_path and pdf_path.exists():
+                selected[co_prova] = {
+                    'pdf_path': pdf_path,
+                    'tp_aplicacao': 'REGULAR',
+                    'app_key': 'P1',
+                    'tx_cor': color,
+                    'desc_original': row.get('DESC_ORIGINAL', '')
+                }
+                break
+
+    # 2. Seleciona 1 Caderno de Reaplicação / PPL (P2)
+    df_p2 = df_dict_math[df_dict_math['TP_APLICACAO'] == 'P2']
+    p2_chosen = False
+
+    for color in PREFERRED_COLORS:
+        matching_rows = df_p2[df_p2['TX_COR'] == color]
+        if matching_rows.empty:
             continue
 
-        color = str(row['TX_COR']).strip()
-        expected_filename = get_pdf_filename(year, day, color)
-        if not expected_filename:
-            continue
+        for _, row in matching_rows.iterrows():
+            co_prova = int(row['CO_PROVA'])
+            expected_filename = get_pdf_filename(year, day, color, application='P2')
+            if not expected_filename:
+                continue
 
-        pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
-        if pdf_path and pdf_path.exists():
-            mapping[co_prova] = pdf_path
+            pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+            if pdf_path and pdf_path.exists():
+                selected[co_prova] = {
+                    'pdf_path': pdf_path,
+                    'tp_aplicacao': 'REAPLICACAO_PPL',
+                    'app_key': 'P2',
+                    'tx_cor': color,
+                    'desc_original': row.get('DESC_ORIGINAL', '')
+                }
+                p2_chosen = True
+                break
 
-    return mapping
+        if p2_chosen:
+            break
+
+    # Fallback para P2 se nenhuma das preferidas funcionou
+    if not p2_chosen and not df_p2.empty:
+        for _, row in df_p2.iterrows():
+            co_prova = int(row['CO_PROVA'])
+            color = str(row['TX_COR']).strip()
+            expected_filename = get_pdf_filename(year, day, color, application='P2')
+            if not expected_filename:
+                continue
+            pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+            if pdf_path and pdf_path.exists():
+                selected[co_prova] = {
+                    'pdf_path': pdf_path,
+                    'tp_aplicacao': 'REAPLICACAO_PPL',
+                    'app_key': 'P2',
+                    'tx_cor': color,
+                    'desc_original': row.get('DESC_ORIGINAL', '')
+                }
+                break
+
+    return selected
 
 def build_exam_pdf_mapping(provas_dir: Path, df_itens: pd.DataFrame, year: int) -> Dict[int, Path]:
     """
-    Constrói o dicionário mapeando CO_PROVA -> Caminho do PDF do caderno,
-    utilizando as colunas CO_PROVA, SG_AREA e TX_COR do CSV de itens e o catálogo estático.
+    Função legada para mapeamento direto via colunas do CSV de itens.
     """
     if not provas_dir.exists():
         raise FileNotFoundError(f"Diretório de provas não encontrado em: {provas_dir}")
@@ -97,7 +210,7 @@ def build_exam_pdf_mapping(provas_dir: Path, df_itens: pd.DataFrame, year: int) 
         except ValueError:
             continue
 
-        expected_filename = get_pdf_filename(year, day, color)
+        expected_filename = get_pdf_filename(year, day, color, application='P1')
         if not expected_filename:
             continue
 

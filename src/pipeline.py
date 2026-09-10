@@ -1,6 +1,7 @@
 """
 Orquestrador principal da pipeline de extração e enriquecimento dos itens do ENEM.
-Focado exclusivamente na área de Matemática (MT) com resolução dinâmica pelo Dicionário.
+Focado exclusivamente na área de Matemática (MT) com resolução dinâmica pelo Dicionário
+e seleção unária determinística de cadernos (1 cor da Prova Regular + 1 cor de Reaplicação/PPL).
 """
 
 from pathlib import Path
@@ -10,7 +11,7 @@ import pandas as pd
 
 from src.config import TARGET_AREA
 from src.dictionary_parser import parse_math_exam_codes
-from src.pdf_matcher import build_math_exam_pdf_mapping
+from src.pdf_matcher import build_selected_math_exams
 from src.pdf_extractor import extract_questions_from_pdf
 
 def locate_year_paths(root_dir: Path, year: int) -> Tuple[Path, Path, Path]:
@@ -97,11 +98,11 @@ def run_enem_pipeline(
     output_dir: Optional[Path] = None
 ) -> pd.DataFrame:
     """
-    Executa a pipeline completa de Matemática para o ano especificado:
+    Executa a pipeline de Matemática para o ano especificado:
     1. Localiza CSV de itens, pasta de provas e Dicionário de Dados (.xlsx).
-    2. Lê o Dicionário dinamicamente para extrair os códigos CO_PROVA_MT regulares da 1ª Aplicação.
-    3. Cruza os códigos com o catálogo estático de PDFs para Dia 2.
-    4. Filtra ITENS_PROVA_{ANO}.csv mantendo apenas SG_AREA == 'MT' e CO_PROVA regulares mapeados.
+    2. Lê o Dicionário dinamicamente para classificar códigos de Matemática em Regular (P1) e PPL (P2).
+    3. Seleciona deterministicamente 1 caderno Regular e 1 caderno PPL (quando houver).
+    4. Filtra ITENS_PROVA_{ANO}.csv mantendo apenas os itens dos cadernos selecionados.
     5. Extrai enunciados, alternativas (A-E) e presença de imagem via PyMuPDF.
     6. Exporta a base enriquecida em processed/itens_prova_{ANO}_enriquecido.csv.
     """
@@ -110,6 +111,7 @@ def run_enem_pipeline(
 
     print(f"\n========================================================")
     print(f" Iniciando Pipeline ENEM (Matemática - MT) - Ano: {year}")
+    print(f" Escopo: 1 Cor Regular (P1) + 1 Cor Reaplicação/PPL (P2)")
     print(f" Diretório base: {root_dir}")
     print(f"========================================================\n")
 
@@ -120,7 +122,7 @@ def run_enem_pipeline(
     print(f"      - Pasta Provas: {provas_dir}")
 
     # 1. Carrega dados estruturados do CSV de itens
-    print(f"\n[2/4] Carregando itens e mapeando provas via Dicionário...")
+    print(f"\n[2/4] Carregando itens e selecionando cadernos via Dicionário...")
     try:
         df_itens_all = pd.read_csv(csv_path, sep=';', encoding='latin1')
     except Exception:
@@ -136,20 +138,22 @@ def run_enem_pipeline(
 
     # 2. Busca dinâmica dos códigos CO_PROVA_MT no Dicionário
     df_dict_math = parse_math_exam_codes(dict_path)
-    print(f"      Códigos regulares identificados no Dicionário ({len(df_dict_math)}):")
+    print(f"      Códigos identificados no Dicionário ({len(df_dict_math)}):")
     for _, r in df_dict_math.iterrows():
-        print(f"       - Código {r['CO_PROVA']}: {r['TX_COR']} ('{r['DESC_ORIGINAL']}')")
+        print(f"       - [{r['TP_APLICACAO']}] Código {r['CO_PROVA']}: {r['TX_COR']} ('{r['DESC_ORIGINAL']}')")
 
-    # 3. Mapeamento determinístico de CO_PROVA -> PDF via catálogo estático (Dia 2)
-    exam_pdf_map = build_math_exam_pdf_mapping(provas_dir, df_dict_math, year)
+    # 3. Seleção determinística unária de cadernos (1 Regular + 1 PPL)
+    selected_exams = build_selected_math_exams(provas_dir, df_dict_math, year)
+    if not selected_exams:
+        raise RuntimeError(f"Nenhum caderno de Matemática para {year} foi localizado fisicamente em {provas_dir}.")
+
+    exam_pdf_map: Dict[int, Path] = {c: info['pdf_path'] for c, info in selected_exams.items()}
+    exam_app_map: Dict[int, str] = {c: info['tp_aplicacao'] for c, info in selected_exams.items()}
     unique_pdfs = sorted(list(set(exam_pdf_map.values())))
-    print(f"      Total de códigos de prova regulares mapeados a PDFs físicos: {len(exam_pdf_map)}")
-    print(f"      Total de arquivos PDF identificados: {len(unique_pdfs)}")
-    for pdf_path in unique_pdfs:
-        print(f"       - {pdf_path.name}")
 
-    if not unique_pdfs:
-        raise RuntimeError(f"Nenhum arquivo PDF correspondente aos cadernos de Matemática de {year} foi localizado em {provas_dir}.")
+    print(f"\n      Cadernos de Matemática selecionados para extração:")
+    for co_prova, info in selected_exams.items():
+        print(f"       - [{info['tp_aplicacao']}] Código {co_prova} ({info['tx_cor']}): {info['pdf_path'].name}")
 
     # 4. Extração de conteúdo dos PDFs via PyMuPDF
     print(f"\n[3/4] Extraindo enunciados, alternativas e imagens dos PDFs de Matemática...")
@@ -162,10 +166,11 @@ def run_enem_pipeline(
 
     # 5. Enriquecimento dos dados
     print(f"\n[4/4] Enriquecendo e estruturando dados tabulares de Matemática...")
-    regular_codes = set(exam_pdf_map.keys())
-    df_reg = df_itens[df_itens['CO_PROVA'].isin(regular_codes)].copy()
+    selected_codes = set(selected_exams.keys())
+    df_reg = df_itens[df_itens['CO_PROVA'].isin(selected_codes)].copy()
     print(f"      Total de itens de Matemática a enriquecer: {len(df_reg)}")
 
+    tp_aplicacao_list = []
     ref_pdf_list = []
     enunciado_list = []
     alt_a_list = []
@@ -186,6 +191,8 @@ def run_enem_pipeline(
         if has_tp_lingua:
             t_lang = row['TP_LINGUA']
             t_lang_key = float(t_lang) if pd.notna(t_lang) else None
+
+        tp_aplicacao_list.append(exam_app_map.get(c_prova, 'REGULAR'))
 
         pdf_path = exam_pdf_map.get(c_prova)
         pdf_name = pdf_path.name if pdf_path else ""
@@ -229,6 +236,7 @@ def run_enem_pipeline(
             alt_e_list.append("")
             tem_imagem_list.append(0)
 
+    df_reg['TP_APLICACAO'] = tp_aplicacao_list
     df_reg['REF_ARQUIVO_PDF'] = ref_pdf_list
     df_reg['DESC_ENUNCIADO'] = enunciado_list
     df_reg['DESC_ALTER_A'] = alt_a_list
@@ -246,13 +254,18 @@ def run_enem_pipeline(
     df_reg.to_csv(out_file, sep=';', index=False, encoding='utf-8-sig')
 
     elapsed = time.time() - start_time
+    reg_count = (df_reg['TP_APLICACAO'] == 'REGULAR').sum()
+    ppl_count = (df_reg['TP_APLICACAO'] == 'REAPLICACAO_PPL').sum()
+
     print(f"\n========================================================")
     print(f" PIPELINE DE MATEMÁTICA CONCLUÍDA COM SUCESSO!")
-    print(f" Itens processados: {len(df_reg)}")
-    print(f" Taxa de correspondência: {matches_count}/{len(df_reg)} ({matches_count/len(df_reg)*100:.1f}%)")
+    print(f" Itens Prova Regular (P1):     {reg_count}")
+    print(f" Itens Reaplicação/PPL (P2):   {ppl_count}")
+    print(f" Total de itens enriquecidos:  {len(df_reg)}")
+    print(f" Taxa de correspondência:      {matches_count}/{len(df_reg)} ({matches_count/len(df_reg)*100:.1f}%)")
     print(f" Itens com imagem identificada: {df_reg['IN_ITEM_IMAGEM'].sum()} ({df_reg['IN_ITEM_IMAGEM'].mean()*100:.1f}%)")
-    print(f" Arquivo gerado: {out_file}")
-    print(f" Tempo total: {elapsed:.2f}s")
+    print(f" Arquivo gerado:               {out_file}")
+    print(f" Tempo total:                  {elapsed:.2f}s")
     print(f"========================================================\n")
 
     return df_reg

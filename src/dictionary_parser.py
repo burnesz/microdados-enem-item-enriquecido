@@ -1,6 +1,8 @@
 """
 Módulo para leitura e interpretação do Dicionário de Dados do ENEM.
-Realiza busca dinâmica pelo atributo CO_PROVA_MT em todas as abas da planilha.
+Realiza busca dinâmica pelo atributo CO_PROVA_MT em todas as abas da planilha,
+classificando as provas identificadas em Primeira Aplicação (P1) e Reaplicação/PPL (P2),
+e descartando provas adaptadas e digitais.
 """
 
 from pathlib import Path
@@ -9,18 +11,20 @@ import openpyxl
 import pandas as pd
 
 from src.catalog import normalize_color
-from src.config import EXCLUDED_TEST_KEYWORDS, REGULAR_COLORS, TARGET_AREA
+from src.config import ADAPTED_TEST_KEYWORDS, PPL_TEST_KEYWORDS, REGULAR_COLORS, TARGET_AREA
 
 def parse_math_exam_codes(dictionary_path: Path) -> pd.DataFrame:
     """
     Percorre dinamicamente todas as abas do dicionário de dados (.xlsx), localizando
     a célula que contém a variável 'CO_PROVA_MT'. A partir dessa linha, extrai os códigos
-    numéricos de prova e descrições/cores, filtrando provas adaptadas e reaplicações/PPL.
+    numéricos de prova, descrições e cores, classificando em P1 (Regular) e P2 (Reaplicação / PPL)
+    e descartando provas adaptadas e digitais.
 
     Retorna um DataFrame contendo as colunas:
     - SG_AREA: 'MT'
     - CO_PROVA: int (código da prova)
     - TX_COR: str (cor padronizada, ex: 'AZUL', 'AMARELO', 'CINZA', 'ROSA', 'VERDE')
+    - TP_APLICACAO: str ('P1' para Regular ou 'P2' para Reaplicação/PPL)
     - DESC_ORIGINAL: str (descrição original no dicionário)
     """
     if not dictionary_path.exists():
@@ -78,8 +82,14 @@ def parse_math_exam_codes(dictionary_path: Path) -> pd.DataFrame:
             if code is not None and desc is not None:
                 desc_lower = desc.lower()
 
-                # Verifica se é prova excluída (reaplicação, adaptação, digital, etc.)
-                is_excluded = any(kw in desc_lower for kw in EXCLUDED_TEST_KEYWORDS)
+                # Verifica se é prova adaptada ou digital (exclusão permanente)
+                is_adapted = any(kw in desc_lower for kw in ADAPTED_TEST_KEYWORDS)
+                if is_adapted:
+                    continue
+
+                # Classifica se é Reaplicação / PPL (P2) ou Regular (P1)
+                is_ppl = any(kw in desc_lower for kw in PPL_TEST_KEYWORDS)
+                tp_aplicacao = 'P2' if is_ppl else 'P1'
 
                 # Identifica cor padronizada oficial
                 standard_color = None
@@ -89,11 +99,12 @@ def parse_math_exam_codes(dictionary_path: Path) -> pd.DataFrame:
                         standard_color = normalize_color(col)
                         break
 
-                if not is_excluded and standard_color is not None:
+                if standard_color is not None:
                     records.append({
                         'SG_AREA': TARGET_AREA,
                         'CO_PROVA': code,
                         'TX_COR': standard_color,
+                        'TP_APLICACAO': tp_aplicacao,
                         'DESC_ORIGINAL': desc
                     })
 
@@ -103,7 +114,7 @@ def parse_math_exam_codes(dictionary_path: Path) -> pd.DataFrame:
     wb.close()
 
     if not records:
-        raise RuntimeError(f"Nenhum código regular de Matemática (CO_PROVA_MT) encontrado em {dictionary_path.name}.")
+        raise RuntimeError(f"Nenhum código de Matemática (CO_PROVA_MT) encontrado em {dictionary_path.name}.")
 
     return pd.DataFrame(records)
 

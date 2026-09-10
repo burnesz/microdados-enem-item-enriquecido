@@ -40,11 +40,11 @@ AREA_TO_DAY = {
 TARGET_AREA = 'MT'
 MATH_EXAM_DAY = 2
 
-# Termos que identificam provas não regulares (reaplicações, PPL, digital e adaptações)
-EXCLUDED_TEST_KEYWORDS = [
-    'reaplica',
-    'ppl',
-    'oportunidade',
+# Ordem determinística de preferência para seleção unária de cores
+PREFERRED_COLORS = ['AMARELO', 'AZUL', 'CINZA', 'ROSA', 'VERDE', 'BRANCO']
+
+# Termos que identificam estritamente provas adaptadas e provas digitais (exclusão permanente)
+ADAPTED_TEST_KEYWORDS = [
     'digital',
     'adaptad',
     'ledor',
@@ -58,6 +58,19 @@ EXCLUDED_TEST_KEYWORDS = [
     'videoprova',
     'especial'
 ]
+
+# Termos que identificam provas de Reaplicação e PPL (Segunda Aplicação - P2)
+PPL_TEST_KEYWORDS = [
+    'reaplica',
+    'ppl',
+    'oportunidade',
+    'segunda',
+    '2ª',
+    '2a'
+]
+
+# Mantido por retrocompatibilidade (aponta para provas excluídas)
+EXCLUDED_TEST_KEYWORDS = ADAPTED_TEST_KEYWORDS
 
 # Expressões regulares para limpeza de ruídos nos PDFs das provas
 WATERMARK_REGEX = re.compile(r'(ENEM\s*\d{4}\s*){2,}', re.IGNORECASE)
