@@ -97,10 +97,13 @@ def build_calibri_cmap() -> str:
         0x03EC: '0', 0x03ED: '1', 0x03EE: '2', 0x03EF: '3', 0x03F0: '4',
         0x03F1: '5', 0x03F2: '6', 0x03F3: '7', 0x03F4: '8', 0x03F5: '9',
         0x0045: 'N', 0x005E: 'S', 0x0012: 'C', 0x0057: 'P', 0x005A: 'R', 0x001C: 'E',
-        0x0102: 'a', 0x0106: 'ã', 0x010F: 'b', 0x0110: 'c', 0x011A: 'd', 0x011E: 'e',
-        0x0128: 'f', 0x0150: 'g', 0x015D: 'i', 0x015F: 'í', 0x016F: 'l', 0x0175: 'm',
-        0x0176: 'n', 0x017D: 'o', 0x017F: 'ó', 0x0181: 'õ', 0x0189: 'p', 0x018B: 'q',
-        0x018C: 'r', 0x0190: 's', 0x019A: 't', 0x01B5: 'u', 0x01C0: 'v',
+        0x0004: 'A', 0x0044: 'M',
+        0x0102: 'a', 0x0104: 'á', 0x0106: 'ã', 0x010F: 'b', 0x0110: 'c', 0x011A: 'd',
+        0x011E: 'e', 0x0128: 'f', 0x0150: 'g', 0x015A: 'h', 0x015D: 'i', 0x015F: 'í',
+        0x016C: 'k', 0x016F: 'l', 0x0175: 'm', 0x0176: 'n', 0x017D: 'o', 0x017F: 'ó',
+        0x0180: 'ô', 0x0181: 'õ', 0x0189: 'p', 0x018B: 'q', 0x018C: 'r', 0x0190: 's',
+        0x019A: 't', 0x01B5: 'u', 0x01C0: 'v', 0x01CC: 'z',
+        0x01D1: 'º', 0x03F8: '²', 0x0018: 'd',
         0x0372: '-', 0x037E: '(', 0x037F: ')', 0x0439: '%',
         0x0003: ' ', 0x0020: ' '
     }
@@ -134,11 +137,98 @@ def build_calibri_cmap() -> str:
     ])
     return '\n'.join(lines)
 
+ADOBE_STANDARD_GLYPHS: Dict[str, str] = {
+    'space': ' ', 'comma': ',', 'period': '.', 'hyphen': '-', 'colon': ':',
+    'semicolon': ';', 'percent': '%', 'parenleft': '(', 'parenright': ')',
+    'bracketleft': '[', 'bracketright': ']', 'plus': '+', 'equal': '=',
+    'slash': '/', 'emdash': '—', 'endash': '–', 'exclam': '!', 'question': '?',
+    'quotedblleft': '“', 'quotedblright': '”', 'quoteright': '’', 'dollar': '$',
+    'bar': '|', 'degree': '°', 'twosuperior': '²', 'threesuperior': '³',
+    'acute': '´', 'ordmasculine': 'º', 'Agrave': 'À', 'Aacute': 'Á', 'Atilde': 'Ã',
+    'Ccedilla': 'Ç', 'Eacute': 'É', 'Iacute': 'Í', 'multiply': '×', 'Uacute': 'Ú',
+    'agrave': 'à', 'aacute': 'á', 'acircumflex': 'â', 'atilde': 'ã', 'ccedilla': 'ç',
+    'eacute': 'é', 'ecircumflex': 'ê', 'iacute': 'í', 'ntilde': 'ñ', 'oacute': 'ó',
+    'ocircumflex': 'ô', 'otilde': 'õ', 'uacute': 'ú',
+    'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+    'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9'
+}
+for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz':
+    ADOBE_STANDARD_GLYPHS[c] = c
+
+INDESIGN_EXTRA_CIDS: Dict[int, str] = {
+    0x5F: 'à', 0x65: 'É', 0x66: 'à', 0x69: 'á', 0x6A: 'à', 0x6B: 'â',
+    0x6D: 'ã', 0x6F: 'ç', 0x70: 'é', 0x72: 'ê', 0x74: 'í', 0x79: 'ó',
+    0x7B: 'ô', 0x7D: 'õ', 0x7E: 'ú', 0x82: '²', 0x83: '³', 0x87: '•',
+    0x22: '”', 0xB2: '²', 0xB3: '“', 0xB4: '”', 0xBF: 'fi', 0xC0: 'fl',
+    0xF0: '²', 0x146: '–', 0x28C: 'π',
+    106: 'à', 107: 'â', 135: '•', 178: '”', 179: '“', 180: '”',
+    191: 'fi', 192: 'fl', 240: '²', 326: '–', 652: 'π'
+}
+
+def glyph_to_unicode(gname: str) -> Optional[str]:
+    if gname in ADOBE_STANDARD_GLYPHS:
+        return ADOBE_STANDARD_GLYPHS[gname]
+    if gname.startswith('g') and gname[1:].isdigit():
+        cid = int(gname[1:])
+        if cid in INDESIGN_EXTRA_CIDS:
+            return INDESIGN_EXTRA_CIDS[cid]
+        if 3 <= cid <= 97:
+            return chr(cid + 29)
+    return None
+
+def build_tounicode_from_differences(enc_str: str) -> Optional[str]:
+    m = re.search(r'/Differences\s*\[(.*?)\]', enc_str, re.DOTALL)
+    if not m:
+        return None
+    tokens = m.group(1).split()
+    code_to_uni = {}
+    curr_code = 0
+    for tok in tokens:
+        if tok.isdigit():
+            curr_code = int(tok)
+        elif tok.startswith('/'):
+            gname = tok[1:]
+            u = glyph_to_unicode(gname)
+            if u:
+                code_to_uni[curr_code] = u
+            curr_code += 1
+    if not code_to_uni:
+        return None
+    lines = [
+        '/CIDInit /ProcSet findresource begin',
+        '12 dict begin',
+        'begincmap',
+        '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def',
+        '/CMapName /Custom-Diff-ToUnicode def',
+        '/CMapType 2 def',
+        '1 begincodespacerange',
+        '<00> <FF>',
+        'endcodespacerange',
+    ]
+    items = sorted(code_to_uni.items())
+    chunk_size = 100
+    for i in range(0, len(items), chunk_size):
+        chunk = items[i:i + chunk_size]
+        lines.append(f'{len(chunk)} beginbfchar')
+        for code, u in chunk:
+            u_hex = ''.join(f'{ord(c):04X}' for c in u)
+            lines.append(f'<{code:02X}> <{u_hex}>')
+        lines.append('endbfchar')
+    lines.extend([
+        'endcmap',
+        'CMapName currentdict /CMap defineresource pop',
+        'end',
+        'end'
+    ])
+    return '\n'.join(lines)
+
 def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
     """
-    Inspeciona o documento PDF em busca de fontes Type0 /Identity-H que não possuem
-    a tabela /ToUnicode CMap e injeta dinamicamente o mapeamento adequado,
-    recarregando o documento em memória caso modificações sejam aplicadas.
+    Inspeciona o documento PDF em busca de:
+    1. Fontes Type0 /Identity-H que não possuem a tabela /ToUnicode CMap.
+    2. Fontes Type1 com dicionário /Encoding contendo vetor /Differences com glifos
+       InDesign (/g<CID>) que foram omitidos ou truncados no /ToUnicode original.
+    Injeta dinamicamente o CMap adequado e recarrega o documento em memória se modificado.
     """
     indesign_bytes = build_indesign_identity_h_cmap().encode('ascii')
     calibri_bytes = build_calibri_cmap().encode('ascii')
@@ -147,14 +237,28 @@ def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
     for xref in range(1, doc.xref_length()):
         try:
             obj = doc.xref_object(xref)
-            if ('/Type /Font' in obj or '/Type/Font' in obj) and ('/Identity-H' in obj or '/Type0' in obj):
-                if '/ToUnicode' not in obj:
+            if '/Type /Font' in obj or '/Type/Font' in obj:
+                # 1. Type0 / Identity-H sem ToUnicode
+                if ('/Identity-H' in obj or '/Type0' in obj) and '/ToUnicode' not in obj:
                     cmap_bytes = calibri_bytes if 'Calibri' in obj else indesign_bytes
                     cmap_xref = doc.get_new_xref()
                     doc.update_object(cmap_xref, f'<< /Length {len(cmap_bytes)} >>\nstream\n')
                     doc.update_stream(cmap_xref, cmap_bytes)
                     doc.xref_set_key(xref, 'ToUnicode', f'{cmap_xref} 0 R')
                     modified = True
+
+                # 2. Type1 com /Differences contendo glifos InDesign /g<CID>
+                m = re.search(r'/Encoding\s+(\d+)\s+0\s+R', obj)
+                enc_str = doc.xref_object(int(m.group(1))) if m else obj
+                if '/Differences' in enc_str and '/g' in enc_str:
+                    cmap_str = build_tounicode_from_differences(enc_str)
+                    if cmap_str:
+                        cmap_bytes = cmap_str.encode('ascii')
+                        cmap_xref = doc.get_new_xref()
+                        doc.update_object(cmap_xref, f'<< /Length {len(cmap_bytes)} >>\nstream\n')
+                        doc.update_stream(cmap_xref, cmap_bytes)
+                        doc.xref_set_key(xref, 'ToUnicode', f'{cmap_xref} 0 R')
+                        modified = True
         except Exception:
             pass
 
@@ -169,6 +273,7 @@ def clean_page_text(text: str) -> str:
     """
     # 0. Limpeza defensiva de caracteres de controle e ligaduras
     text = text.replace('\x03', ' ').replace('\x0f', ',').replace('\x11', '.')
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', ' ', text)
     text = re.sub(r'(\w)¿', r'\1fi', text)
     text = re.sub(r'¿(\w)', r'fi\1', text)
 
