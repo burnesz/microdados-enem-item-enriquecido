@@ -19,11 +19,159 @@ from src.config import (
     IMAGE_ALT_PLACEHOLDER
 )
 
+def build_indesign_identity_h_cmap() -> str:
+    """
+    Constrói um CMap /ToUnicode para fontes Type0 /Identity-H geradas pelo Adobe InDesign
+    que foram incorporadas sem tabela ToUnicode nos PDFs do ENEM.
+    Mapeia:
+    1. Caracteres ASCII 32..126 com deslocamento CID = ASCII - 29 (ex: CID 70 'F' -> 'c').
+    2. Ligaduras tipográficas 'fi' (CID 0x00BF) e 'fl' (CID 0x00C0).
+    3. Caracteres acentuados do português e pontuações especiais do InDesign.
+    """
+    mappings = []
+    # ASCII 32 a 126
+    for ascii_code in range(32, 127):
+        cid = ascii_code - 29
+        mappings.append((cid, chr(ascii_code)))
+
+    extra_cids = {
+        0x5F: 'à',
+        0x65: 'É',
+        0x69: 'á',
+        0x6D: 'ã',
+        0x6F: 'ç',
+        0x70: 'é',
+        0x72: 'ê',
+        0x74: 'í',
+        0x79: 'ó',
+        0x7B: 'ô',
+        0x7D: 'õ',
+        0x7E: 'ú',
+        0x82: '²',
+        0x83: '³',
+        0x87: '•',
+        0x22: '”',
+        0xB3: '“',
+        0xBF: 'fi',
+        0xC0: 'fl',
+        0x28C: 'π',
+    }
+    for cid, ch in extra_cids.items():
+        mappings.append((cid, ch))
+
+    lines = [
+        '/CIDInit /ProcSet findresource begin',
+        '12 dict begin',
+        'begincmap',
+        '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def',
+        '/CMapName /Custom-InDesign-Identity-H def',
+        '/CMapType 2 def',
+        '1 begincodespacerange',
+        '<0000> <FFFF>',
+        'endcodespacerange',
+    ]
+
+    chunk_size = 100
+    for i in range(0, len(mappings), chunk_size):
+        chunk = mappings[i:i + chunk_size]
+        lines.append(f'{len(chunk)} beginbfchar')
+        for cid, ch in chunk:
+            uni_hex = ''.join(f'{ord(c):04X}' for c in ch)
+            lines.append(f'<{cid:04X}> <{uni_hex}>')
+        lines.append('endbfchar')
+
+    lines.extend([
+        'endcmap',
+        'CMapName currentdict /CMap defineresource pop',
+        'end',
+        'end'
+    ])
+    return '\n'.join(lines)
+
+def build_calibri_cmap() -> str:
+    """
+    Constrói um CMap /ToUnicode para fontes Calibri incorporadas em gráficos vetoriais do Excel
+    (ex: gráfico do IBGE do ENEM 2010 P1).
+    """
+    calibri_map = {
+        0x03EC: '0', 0x03ED: '1', 0x03EE: '2', 0x03EF: '3', 0x03F0: '4',
+        0x03F1: '5', 0x03F2: '6', 0x03F3: '7', 0x03F4: '8', 0x03F5: '9',
+        0x0045: 'N', 0x005E: 'S', 0x0012: 'C', 0x0057: 'P', 0x005A: 'R', 0x001C: 'E',
+        0x0102: 'a', 0x0106: 'ã', 0x010F: 'b', 0x0110: 'c', 0x011A: 'd', 0x011E: 'e',
+        0x0128: 'f', 0x0150: 'g', 0x015D: 'i', 0x015F: 'í', 0x016F: 'l', 0x0175: 'm',
+        0x0176: 'n', 0x017D: 'o', 0x017F: 'ó', 0x0181: 'õ', 0x0189: 'p', 0x018B: 'q',
+        0x018C: 'r', 0x0190: 's', 0x019A: 't', 0x01B5: 'u', 0x01C0: 'v',
+        0x0372: '-', 0x037E: '(', 0x037F: ')', 0x0439: '%',
+        0x0003: ' ', 0x0020: ' '
+    }
+    lines = [
+        '/CIDInit /ProcSet findresource begin',
+        '12 dict begin',
+        'begincmap',
+        '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def',
+        '/CMapName /Custom-Calibri-Identity-H def',
+        '/CMapType 2 def',
+        '1 begincodespacerange',
+        '<0000> <FFFF>',
+        'endcodespacerange',
+    ]
+
+    items = list(calibri_map.items())
+    chunk_size = 100
+    for i in range(0, len(items), chunk_size):
+        chunk = items[i:i + chunk_size]
+        lines.append(f'{len(chunk)} beginbfchar')
+        for cid, ch in chunk:
+            uni_hex = ''.join(f'{ord(c):04X}' for c in ch)
+            lines.append(f'<{cid:04X}> <{uni_hex}>')
+        lines.append('endbfchar')
+
+    lines.extend([
+        'endcmap',
+        'CMapName currentdict /CMap defineresource pop',
+        'end',
+        'end'
+    ])
+    return '\n'.join(lines)
+
+def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
+    """
+    Inspeciona o documento PDF em busca de fontes Type0 /Identity-H que não possuem
+    a tabela /ToUnicode CMap e injeta dinamicamente o mapeamento adequado,
+    recarregando o documento em memória caso modificações sejam aplicadas.
+    """
+    indesign_bytes = build_indesign_identity_h_cmap().encode('ascii')
+    calibri_bytes = build_calibri_cmap().encode('ascii')
+
+    modified = False
+    for xref in range(1, doc.xref_length()):
+        try:
+            obj = doc.xref_object(xref)
+            if ('/Type /Font' in obj or '/Type/Font' in obj) and ('/Identity-H' in obj or '/Type0' in obj):
+                if '/ToUnicode' not in obj:
+                    cmap_bytes = calibri_bytes if 'Calibri' in obj else indesign_bytes
+                    cmap_xref = doc.get_new_xref()
+                    doc.update_object(cmap_xref, f'<< /Length {len(cmap_bytes)} >>\nstream\n')
+                    doc.update_stream(cmap_xref, cmap_bytes)
+                    doc.xref_set_key(xref, 'ToUnicode', f'{cmap_xref} 0 R')
+                    modified = True
+        except Exception:
+            pass
+
+    if modified:
+        return pymupdf.open(stream=doc.tobytes(), filetype='pdf')
+    return doc
+
 def clean_page_text(text: str) -> str:
     """
     Remove marcas d'água, códigos de barras e cabeçalhos/rodapés repetitivos da página,
-    unificando números de questões quebrados em linhas distintas.
+    unificando números de questões quebrados em linhas distintas e normalizando ligaduras residuais.
     """
+    # 0. Limpeza defensiva de caracteres de controle e ligaduras
+    text = text.replace('\x03', ' ').replace('\x0f', ',').replace('\x11', '.')
+    text = re.sub(r'(\w)¿', r'\1fi', text)
+    text = re.sub(r'¿(\w)', r'fi\1', text)
+
     # 1. Unifica 'Questão \n 14' em 'Questão 14' antes de qualquer filtro de linhas
     text = re.sub(r'(QUEST[ÃA]O)\s*[\n\r]+\s*(\d+)', r'\1 \2', text, flags=re.IGNORECASE)
 
@@ -199,6 +347,7 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
         raise FileNotFoundError(f"Arquivo PDF não encontrado: {pdf_path}")
 
     doc = pymupdf.open(pdf_path)
+    doc = repair_pdf_document_fonts(doc)
 
     # Extrai e limpa o texto das páginas
     pages_text = [clean_page_text(doc[p].get_text("text")) for p in range(1, len(doc))]
