@@ -13,11 +13,29 @@ from src.config import (
     TARGET_AREA,
     SUPPORTED_YEARS,
     CONSOLIDATED_OUTPUT_FILENAME,
-    CANONICAL_COLUMNS
+    CANONICAL_COLUMNS,
+    INTEGER_COLUMNS,
+    FLOAT_COLUMNS
 )
 from src.dictionary_parser import parse_math_exam_codes
 from src.pdf_matcher import build_selected_math_exams
 from src.pdf_extractor import extract_questions_from_pdf
+
+def enforce_column_types(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Garante a preservação estrita dos tipos de dados de cada coluna:
+    - Colunas inteiras (mesmo com valores ausentes/nulos) são convertidas para Int64
+      (evitando que inteiros virem decimais .0 na exportação em CSV).
+    - Colunas de parâmetros da TRI são convertidas para float64.
+    """
+    df = df.copy()
+    for col in INTEGER_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
+    for col in FLOAT_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
+    return df
 
 def locate_year_paths(root_dir: Path, year: int) -> Tuple[Path, Path, Path]:
     """
@@ -258,6 +276,9 @@ def run_enem_pipeline(
     ]
     df_reg = df_reg[ordered_cols]
 
+    # Aplica a preservação estrita de tipagem (inteiros sem .0 e floats contínuos)
+    df_reg = enforce_column_types(df_reg)
+
     out_folder = output_dir or (root_dir / "processed")
     out_folder.mkdir(parents=True, exist_ok=True)
     out_file = out_folder / f"itens_prova_{year}_enriquecido.csv"
@@ -333,6 +354,7 @@ def consolidate_all_years(
         else:
             df_year['ANO_APLICACAO'] = int(y)
 
+        df_year = enforce_column_types(df_year)
         dfs.append(df_year)
         print(f" - [{y}] {len(df_year):>2} itens carregados ({year_file.name})")
 
@@ -343,6 +365,9 @@ def consolidate_all_years(
 
     # Concatena todos os DataFrames
     df_consolidated = pd.concat(dfs, ignore_index=True)
+
+    # Aplica preservação estrita de tipos no DataFrame consolidado
+    df_consolidated = enforce_column_types(df_consolidated)
 
     # Ordena as colunas de acordo com o padrão canônico
     ordered_cols = [c for c in CANONICAL_COLUMNS if c in df_consolidated.columns] + [

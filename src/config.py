@@ -143,3 +143,25 @@ CANONICAL_COLUMNS = [
     'DESC_ALTER_E',
     'IN_ITEM_IMAGEM'
 ]
+
+# Colunas numéricas inteiras que devem ser preservadas sem decimais (.0)
+INTEGER_COLUMNS = [
+    'ANO_APLICACAO',
+    'CO_POSICAO',
+    'CO_ITEM',
+    'CO_HABILIDADE',
+    'IN_ITEM_ABAN',
+    'CO_PROVA',
+    'TP_LINGUA',
+    'IN_ITEM_ADAPTADO',
+    'TP_VERSAO_DIGITAL',
+    'IN_ITEM_IMAGEM'
+]
+
+# Colunas decimais contínuas (parâmetros psicométricos da TRI)
+FLOAT_COLUMNS = [
+    'NU_PARAM_A',
+    'NU_PARAM_B',
+    'NU_PARAM_C'
+]
+
