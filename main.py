@@ -14,7 +14,7 @@ current_dir = Path(__file__).resolve().parent
 if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
-from src.pipeline import run_enem_pipeline
+from src.pipeline import run_enem_pipeline, consolidate_all_years
 
 def parse_years(year_arg: str, all_flag: bool = False) -> list[int]:
     """
@@ -45,9 +45,10 @@ def main():
         help="Ano individual ou intervalo a ser processado (ex: 2024 ou 2009-2024)"
     )
     parser.add_argument(
+        "-all",
         "--all",
         action="store_true",
-        help="Executar para todas as edições suportadas (2009 a 2024)"
+        help="Executar para todas as edições suportadas (2009 a 2024) e consolidar os dados"
     )
     parser.add_argument(
         "--base-dir",
@@ -115,7 +116,12 @@ def main():
         sys.exit(1)
     else:
         print(f"\nTodas as edições selecionadas foram processadas com sucesso!")
+        is_all = args.all or str(args.year).lower() in ("all", "*") or (len(years_to_process) == len(range(2009, 2025)))
+        if is_all:
+            print(f"\nExecutando consolidação multi-ano (2009–2024)...")
+            consolidate_all_years(output_dir=output_path, base_dir=base_path)
 
 if __name__ == "__main__":
     main()
+
 

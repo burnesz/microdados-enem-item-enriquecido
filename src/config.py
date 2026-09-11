@@ -108,3 +108,38 @@ ALT_LINE_REGEX = re.compile(r'^\s*([A-E])(?:\t|\.|\)|\s+|$)(.*)$')
 
 # Marcador para alternativas com conteúdo essencialmente gráfico
 IMAGE_ALT_PLACEHOLDER = "[Figura / Imagem]"
+
+# Anos suportados oficialmente pela pipeline
+SUPPORTED_YEARS = list(range(2009, 2025))
+
+# Nome padrão do arquivo consolidado contendo todas as edições
+CONSOLIDATED_OUTPUT_FILENAME = "itens_prova_2009_2024_enriquecido.csv"
+
+# Ordem canônica e padronizada das colunas para os arquivos enriquecidos
+CANONICAL_COLUMNS = [
+    'ANO_APLICACAO',
+    'CO_POSICAO',
+    'SG_AREA',
+    'CO_ITEM',
+    'TX_GABARITO',
+    'CO_HABILIDADE',
+    'IN_ITEM_ABAN',
+    'TX_MOTIVO_ABAN',
+    'NU_PARAM_A',
+    'NU_PARAM_B',
+    'NU_PARAM_C',
+    'TX_COR',
+    'CO_PROVA',
+    'TP_LINGUA',
+    'IN_ITEM_ADAPTADO',
+    'TP_VERSAO_DIGITAL',
+    'TP_APLICACAO',
+    'REF_ARQUIVO_PDF',
+    'DESC_ENUNCIADO',
+    'DESC_ALTER_A',
+    'DESC_ALTER_B',
+    'DESC_ALTER_C',
+    'DESC_ALTER_D',
+    'DESC_ALTER_E',
+    'IN_ITEM_IMAGEM'
+]

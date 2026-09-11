@@ -45,7 +45,8 @@ microdados-enem-item-enriquecido/
 │   └── pipeline.py                # Orquestrador da execução e geração do dataset final
 │
 ├── processed/
-│   └── itens_prova_{ANO}_enriquecido.csv  # Base final enriquecida exportada
+│   ├── itens_prova_{ANO}_enriquecido.csv      # Base final enriquecida anual (2009 a 2024)
+│   └── itens_prova_2009_2024_enriquecido.csv  # Base consolidada multi-ano com todas as edições
 │
 ├── provas_enem_2009_2024.txt      # Catálogo bruto de PDFs de provas e gabaritos
 ├── requirements.txt               # Dependências do projeto (pandas, openpyxl, pymupdf)
@@ -76,16 +77,20 @@ python main.py --year 2024
 
 # Executar para outro ano (ex: 2023, 2022 ou 2017)
 python main.py --year 2023
+
+# Executar todas as edições (2009 a 2024) e gerar a base consolidada automaticamente
+python main.py -all
 ```
 
 ---
 
 ## 📊 Especificação das Colunas de Saída
 
-O arquivo final exportado em `processed/itens_prova_{ANO}_enriquecido.csv` preserva as colunas originais do INEP e adiciona os campos enriquecidos:
+Os arquivos exportados em `processed/` (tanto os anuais quanto o consolidado `itens_prova_2009_2024_enriquecido.csv`) preservam as colunas do INEP e adicionam os campos enriquecidos:
 
 | Coluna | Tipo | Origem | Descrição |
 | :--- | :--- | :--- | :--- |
+| `ANO_APLICACAO` | `int` | Enriquecido | Ano da edição da prova (2009 a 2024) |
 | `CO_POSICAO` | `int` | INEP | Posição da questão no caderno (1 a 45 ou 136 a 180) |
 | `SG_AREA` | `str` | INEP | Sigla da área de conhecimento (`MT` para Matemática) |
 | `CO_ITEM` | `int` | INEP | Código identificador universal do item no banco do INEP |

@@ -9,7 +9,12 @@ from typing import Dict, Optional, Tuple, Any
 import time
 import pandas as pd
 
-from src.config import TARGET_AREA
+from src.config import (
+    TARGET_AREA,
+    SUPPORTED_YEARS,
+    CONSOLIDATED_OUTPUT_FILENAME,
+    CANONICAL_COLUMNS
+)
 from src.dictionary_parser import parse_math_exam_codes
 from src.pdf_matcher import build_selected_math_exams
 from src.pdf_extractor import extract_questions_from_pdf
@@ -236,6 +241,7 @@ def run_enem_pipeline(
             alt_e_list.append("")
             tem_imagem_list.append(0)
 
+    df_reg['ANO_APLICACAO'] = int(year)
     df_reg['TP_APLICACAO'] = tp_aplicacao_list
     df_reg['REF_ARQUIVO_PDF'] = ref_pdf_list
     df_reg['DESC_ENUNCIADO'] = enunciado_list
@@ -245,6 +251,12 @@ def run_enem_pipeline(
     df_reg['DESC_ALTER_D'] = alt_d_list
     df_reg['DESC_ALTER_E'] = alt_e_list
     df_reg['IN_ITEM_IMAGEM'] = tem_imagem_list
+
+    # Reordena colunas preservando a ordem canônica
+    ordered_cols = [c for c in CANONICAL_COLUMNS if c in df_reg.columns] + [
+        c for c in df_reg.columns if c not in CANONICAL_COLUMNS
+    ]
+    df_reg = df_reg[ordered_cols]
 
     out_folder = output_dir or (root_dir / "processed")
     out_folder.mkdir(parents=True, exist_ok=True)
@@ -259,6 +271,7 @@ def run_enem_pipeline(
 
     print(f"\n========================================================")
     print(f" PIPELINE DE MATEMÁTICA CONCLUÍDA COM SUCESSO!")
+    print(f" Edição (Ano):                 {year}")
     print(f" Itens Prova Regular (P1):     {reg_count}")
     print(f" Itens Reaplicação/PPL (P2):   {ppl_count}")
     print(f" Total de itens enriquecidos:  {len(df_reg)}")
@@ -269,3 +282,94 @@ def run_enem_pipeline(
     print(f"========================================================\n")
 
     return df_reg
+
+
+def consolidate_all_years(
+    output_dir: Optional[Path] = None,
+    base_dir: Optional[Path] = None,
+    years: Optional[list[int]] = None,
+    consolidated_filename: Optional[str] = None
+) -> pd.DataFrame:
+    """
+    Consolida as bases enriquecidas individuais de todas as edições em um único arquivo .csv,
+    assegurando a coluna ANO_APLICACAO e a padronização do esquema de colunas.
+
+    :param output_dir: Diretório onde os arquivos enriquecidos residem e onde o consolidado será salvo.
+    :param base_dir: Diretório raiz do projeto.
+    :param years: Lista de anos a consolidar (padrão: 2009 a 2024).
+    :param consolidated_filename: Nome do arquivo .csv de saída.
+    :return: DataFrame consolidado com todas as edições.
+    """
+    root_dir = base_dir or Path(__file__).resolve().parent.parent
+    out_folder = output_dir or (root_dir / "processed")
+    target_years = sorted(years) if years else SUPPORTED_YEARS
+    target_filename = consolidated_filename or CONSOLIDATED_OUTPUT_FILENAME
+    out_file = out_folder / target_filename
+
+    print(f"\n========================================================")
+    print(f" CONSOLIDAÇÃO DE ITENS DO ENEM ({target_years[0]}–{target_years[-1]})")
+    print(f" Diretório de saída: {out_folder}")
+    print(f" Arquivo consolidado: {target_filename}")
+    print(f"========================================================\n")
+
+    dfs: list[pd.DataFrame] = []
+    missing_years: list[int] = []
+
+    for y in target_years:
+        year_file = out_folder / f"itens_prova_{y}_enriquecido.csv"
+        if not year_file.exists():
+            print(f" [AVISO] Arquivo não encontrado para {y}: {year_file.name}")
+            missing_years.append(y)
+            continue
+
+        try:
+            df_year = pd.read_csv(year_file, sep=';', encoding='utf-8-sig')
+        except Exception:
+            df_year = pd.read_csv(year_file, sep=';', encoding='latin1')
+
+        # Assegura a coluna ANO_APLICACAO
+        if 'ANO_APLICACAO' not in df_year.columns:
+            df_year.insert(0, 'ANO_APLICACAO', int(y))
+        else:
+            df_year['ANO_APLICACAO'] = int(y)
+
+        dfs.append(df_year)
+        print(f" - [{y}] {len(df_year):>2} itens carregados ({year_file.name})")
+
+    if not dfs:
+        raise RuntimeError(
+            f"Nenhum arquivo de ano individual foi encontrado em {out_folder} para consolidação."
+        )
+
+    # Concatena todos os DataFrames
+    df_consolidated = pd.concat(dfs, ignore_index=True)
+
+    # Ordena as colunas de acordo com o padrão canônico
+    ordered_cols = [c for c in CANONICAL_COLUMNS if c in df_consolidated.columns] + [
+        c for c in df_consolidated.columns if c not in CANONICAL_COLUMNS
+    ]
+    df_consolidated = df_consolidated[ordered_cols]
+
+    # Salva arquivo consolidado em UTF-8 com BOM e delimitador ;
+    out_folder.mkdir(parents=True, exist_ok=True)
+    df_consolidated.to_csv(out_file, sep=';', index=False, encoding='utf-8-sig')
+
+    total_items = len(df_consolidated)
+    reg_items = (df_consolidated['TP_APLICACAO'] == 'REGULAR').sum() if 'TP_APLICACAO' in df_consolidated.columns else 0
+    ppl_items = (df_consolidated['TP_APLICACAO'] == 'REAPLICACAO_PPL').sum() if 'TP_APLICACAO' in df_consolidated.columns else 0
+    img_items = df_consolidated['IN_ITEM_IMAGEM'].sum() if 'IN_ITEM_IMAGEM' in df_consolidated.columns else 0
+
+    print(f"\n========================================================")
+    print(f" CONSOLIDAÇÃO CONCLUÍDA COM SUCESSO!")
+    print(f" Edições incluídas:          {len(dfs)} edições ({target_years[0]} a {target_years[-1]})")
+    if missing_years:
+        print(f" Edições ausentes:           {missing_years}")
+    print(f" Total de itens no dataset:  {total_items}")
+    print(f" Itens Prova Regular (P1):   {reg_items}")
+    print(f" Itens Reaplicação/PPL (P2): {ppl_items}")
+    print(f" Itens com figuras/imagens:  {int(img_items)}")
+    print(f" Arquivo gerado:             {out_file}")
+    print(f"========================================================\n")
+
+    return df_consolidated
+
