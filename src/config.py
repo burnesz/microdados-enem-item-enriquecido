@@ -97,7 +97,8 @@ ALT_FOOTER_CLEANUP_REGEX = re.compile(
     r'\b(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS[,\s]+CÓDIGOS)\s+E\s+SUAS\s+TECNOLOGIAS.*$|'
     r'\bQuestões\s+de\s+\d+\s+a\s+\d+.*$|'
     r'[•\-–—|]?\s*CADERNO\s+\d+.*$|'
-    r'[•\-–—|]?\s*[12][ºo°]?\s*dia\s*[-–—|]\s*CADERNO.*$'
+    r'[•\-–—|]?\s*[12][ºo°]?\s*dia\s*[-–—|]\s*CADERNO.*$|'
+    r'\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE|ARELO)?\s*[-–—|]?\s*P[ÁA]GINA\s*\d+.*$'
     r')',
     re.IGNORECASE
 )

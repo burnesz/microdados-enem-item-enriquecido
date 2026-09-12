@@ -294,6 +294,8 @@ def clean_page_text(text: str) -> str:
         # Rodapé com menção a caderno ou dia
         if re.search(r'CADERNO\s+\d+', s, re.IGNORECASE) and any(c in s.upper() for c in ['AZUL', 'AMARELO', 'VERDE', 'BRANCO', 'CINZA', 'ROSA', 'PÁGINA', 'PAGINA']):
             continue
+        if re.search(r'\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE|ARELO)?\s*[-–—|]?\s*P[ÁA]GINA\s*\d+', s, re.IGNORECASE):
+            continue
         # Números de página isolados
         if re.match(r'^\d{1,2}$', s):
             continue
@@ -390,16 +392,15 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
         clean_enunciado = sanitize_question_text(enunciado_raw)
         return clean_enunciado, alts
 
-    # 2. Padrão visual com letras no final (ex: 'A D B E C' ou 'A B C D E')
-    m_visual = re.search(r'\bA\s+D\s+B\s+E\s+C(?:\s+MN\s+MO)?\s*$', q_text, re.IGNORECASE) or \
-               re.search(r'\bA\s+B\s+C\s+D\s+E\s*$', q_text, re.IGNORECASE)
+    # 2. Padrão visual com letras no final (ex: 'A D B E C', 'D A B E C', 'A B C D E', etc.)
+    m_visual = re.search(r'\b(?:[A-E]\s+){4}[A-E](?:\s+MN\s+MO|\s+2ª\s*aplicação)?\s*$', q_text, re.IGNORECASE)
     if m_visual:
         enun = q_text[:m_visual.start()].strip()
         alts = {let: IMAGE_ALT_PLACEHOLDER for let in 'ABCDE'}
         return sanitize_question_text(enun), alts
 
     # 3. Padrão inline/sub-colunas com marcadores A-E
-    pattern = re.compile(r'(?:^|\s|\n)([A-E])(?:\s+|\.|\t|\))')
+    pattern = re.compile(r'(?:(?<=[\s\n])|^)([A-E])(?=[\s\n\.\)\t]|$)')
     matches = list(pattern.finditer(q_text))
     for i in range(len(matches) - 5, -1, -1):
         group = matches[i:i + 5]
@@ -418,6 +419,7 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
                 c_text = re.sub(r'\bRascunho\b.*$', '', c_text, flags=re.IGNORECASE).strip()
                 c_text = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*)+.*$', '', c_text, flags=re.IGNORECASE).strip()
                 c_text = re.sub(r'(?:ENEM\s*)?20\d{2}\s*$', '', c_text, flags=re.IGNORECASE).strip()
+                c_text = re.sub(r'2ª\s*aplicação.*$', '', c_text, flags=re.IGNORECASE).strip()
                 if not c_text:
                     c_text = IMAGE_ALT_PLACEHOLDER
                 alts[let] = c_text
@@ -515,16 +517,14 @@ def extract_page_column_text(page: pymupdf.Page) -> str:
     """
     Extrai o texto da página respeitando estritamente o layout de duas colunas:
     primeiro a coluna esquerda (x < mid_x), depois a coluna direita (x >= mid_x).
+    Utiliza clip de cada coluna para garantir isolamento e ordenação correta das linhas.
     """
     mid_x = page.rect.width / 2.0
-    blocks = page.get_text("blocks")
-    text_blocks = [b for b in blocks if b[6] == 0]
-    left = [b for b in text_blocks if b[0] < mid_x]
-    right = [b for b in text_blocks if b[0] >= mid_x]
-    left.sort(key=lambda b: b[1])
-    right.sort(key=lambda b: b[1])
-    ordered = left + right
-    return clean_page_text("\n".join(b[4] for b in ordered))
+    rect_left = pymupdf.Rect(0, 0, mid_x, page.rect.height)
+    rect_right = pymupdf.Rect(mid_x, 0, page.rect.width, page.rect.height)
+    tl = clean_page_text(page.get_text("text", clip=rect_left))
+    tr = clean_page_text(page.get_text("text", clip=rect_right))
+    return tl + "\n" + tr
 
 def extract_vector_circle_alternatives(doc: pymupdf.Document) -> Dict[int, Dict[str, str]]:
     """
@@ -642,10 +642,13 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
         has_img_in_alts = any(val == IMAGE_ALT_PLACEHOLDER for val in alts.values())
         has_spatial_img = (q_num, lang) in questions_with_spatial_images
 
-        # Fallback para questões puramente gráficas sem alternativas em texto
-        if not alts and has_spatial_img:
+        # Fallback para questões puramente gráficas/visuais sem alternativas em texto legível
+        if not alts or len(alts) < 5:
             alts = {let: IMAGE_ALT_PLACEHOLDER for let in 'ABCDE'}
             has_img_in_alts = True
+            # Limpa possíveis resíduos de letras de alternativas no fim do enunciado
+            enunciado = re.sub(r'(?:[\s\n]*[A-E]\b[\s\n]*){3,10}(?:2ª\s*aplicação)?\s*$', '', enunciado, flags=re.I).strip()
+            enunciado = sanitize_question_text(enunciado)
 
         has_image = 1 if (has_img_in_alts or has_spatial_img) else 0
 
