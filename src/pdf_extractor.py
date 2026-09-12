@@ -326,6 +326,10 @@ def sanitize_question_text(t: str) -> str:
 def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
     """
     Segmenta o corpo de uma questão em enunciado e alternativas A, B, C, D, E.
+    Suporta:
+    1. Alternativas padrão linha a linha (A, B, C, D, E)
+    2. Alternativas inline e em sub-colunas (A B C D E ou A D B E C)
+    3. Alternativas puramente gráficas (ex.: 'A D B E C' no final)
     """
     lines = q_text.split('\n')
     candidates = []
@@ -385,9 +389,43 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
 
         clean_enunciado = sanitize_question_text(enunciado_raw)
         return clean_enunciado, alts
-    else:
-        clean_enunciado = sanitize_question_text(q_text)
-        return clean_enunciado, {}
+
+    # 2. Padrão visual com letras no final (ex: 'A D B E C' ou 'A B C D E')
+    m_visual = re.search(r'\bA\s+D\s+B\s+E\s+C(?:\s+MN\s+MO)?\s*$', q_text, re.IGNORECASE) or \
+               re.search(r'\bA\s+B\s+C\s+D\s+E\s*$', q_text, re.IGNORECASE)
+    if m_visual:
+        enun = q_text[:m_visual.start()].strip()
+        alts = {let: IMAGE_ALT_PLACEHOLDER for let in 'ABCDE'}
+        return sanitize_question_text(enun), alts
+
+    # 3. Padrão inline/sub-colunas com marcadores A-E
+    pattern = re.compile(r'(?:^|\s|\n)([A-E])(?:\s+|\.|\t|\))')
+    matches = list(pattern.finditer(q_text))
+    for i in range(len(matches) - 5, -1, -1):
+        group = matches[i:i + 5]
+        letters = [m.group(1) for m in group]
+        if set(letters) == {'A', 'B', 'C', 'D', 'E'}:
+            start_pos = group[0].start()
+            enun = q_text[:start_pos].strip()
+            alts = {}
+            for j in range(5):
+                let = group[j].group(1)
+                content_start = group[j].end()
+                content_end = group[j + 1].start() if j < 4 else len(q_text)
+                c_text = q_text[content_start:content_end].strip()
+                c_text = ALT_FOOTER_CLEANUP_REGEX.sub('', c_text).strip()
+                c_text = BARCODE_REGEX.sub('', c_text).strip()
+                c_text = re.sub(r'\bRascunho\b.*$', '', c_text, flags=re.IGNORECASE).strip()
+                c_text = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*)+.*$', '', c_text, flags=re.IGNORECASE).strip()
+                c_text = re.sub(r'(?:ENEM\s*)?20\d{2}\s*$', '', c_text, flags=re.IGNORECASE).strip()
+                if not c_text:
+                    c_text = IMAGE_ALT_PLACEHOLDER
+                alts[let] = c_text
+            if all(k in alts for k in 'ABCDE'):
+                return sanitize_question_text(enun), alts
+
+    clean_enunciado = sanitize_question_text(q_text)
+    return clean_enunciado, {}
 
 def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: bool) -> Set[Tuple[int, Optional[float]]]:
     """
@@ -473,6 +511,81 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
 
     return questions_with_images
 
+def extract_page_column_text(page: pymupdf.Page) -> str:
+    """
+    Extrai o texto da página respeitando estritamente o layout de duas colunas:
+    primeiro a coluna esquerda (x < mid_x), depois a coluna direita (x >= mid_x).
+    """
+    mid_x = page.rect.width / 2.0
+    blocks = page.get_text("blocks")
+    text_blocks = [b for b in blocks if b[6] == 0]
+    left = [b for b in text_blocks if b[0] < mid_x]
+    right = [b for b in text_blocks if b[0] >= mid_x]
+    left.sort(key=lambda b: b[1])
+    right.sort(key=lambda b: b[1])
+    ordered = left + right
+    return clean_page_text("\n".join(b[4] for b in ordered))
+
+def extract_vector_circle_alternatives(doc: pymupdf.Document) -> Dict[int, Dict[str, str]]:
+    """
+    Detecta alternativas representadas como desenhos vetoriais circulares (ex.: ENEM 2010 Regular),
+    correlacionando cada questão com seus 5 círculos vetoriais e capturando o texto associado.
+    """
+    circles_per_q = {}
+    for pno in range(1, len(doc)):
+        page = doc[pno]
+        mid_x = page.rect.width / 2.0
+        blocks = page.get_text("blocks")
+        q_headers = []
+        for b in blocks:
+            m = re.search(r'Quest[ãa]o\s+(\d+)', b[4], re.I)
+            if m:
+                col = 0 if b[0] < mid_x else 1
+                q_headers.append((int(m.group(1)), col, b[1]))
+        q_headers.sort(key=lambda x: (x[1], x[2]))
+
+        circles = []
+        for d in page.get_drawings():
+            r = d['rect']
+            w = r[2] - r[0]
+            h = r[3] - r[1]
+            if 6.8 <= w <= 7.0 and 6.8 <= h <= 7.0 and len(d.get('items', [])) == 4 and d.get('fill') is not None and d.get('fill')[0] < 0.2:
+                col = 0 if r[0] < mid_x else 1
+                circles.append((col, r[1], r))
+        circles.sort(key=lambda x: (x[0], x[1]))
+
+        if len(circles) == len(q_headers) * 5 and len(circles) > 0:
+            lines = []
+            for b in page.get_text("dict")["blocks"]:
+                if "lines" in b:
+                    for l in b["lines"]:
+                        lt = "".join(s["text"] for s in l["spans"]).strip()
+                        if lt:
+                            lines.append((l["bbox"], lt))
+            for q_idx, (q_num, q_col, q_y) in enumerate(q_headers):
+                q_circs = [c[2] for c in circles[q_idx * 5 : (q_idx + 1) * 5]]
+                x_min = min(c[0] for c in q_circs)
+                sub_left = [c for c in q_circs if c[0] < x_min + 50]
+                sub_right = [c for c in q_circs if c[0] >= x_min + 50]
+                sub_left.sort(key=lambda c: c[1])
+                sub_right.sort(key=lambda c: c[1])
+                if len(sub_left) == 3 and len(sub_right) == 2:
+                    ordered = sub_left + sub_right
+                else:
+                    ordered = sorted(q_circs, key=lambda c: c[1])
+                alts = {}
+                for let, c in zip("ABCDE", ordered):
+                    matched = [l[1] for l in lines if abs(l[0][1] - c[1]) < 8 and c[2] - 5 < l[0][0] < c[2] + 250]
+                    c_text = " ".join(matched).strip()
+                    c_text = ALT_FOOTER_CLEANUP_REGEX.sub("", c_text).strip()
+                    c_text = BARCODE_REGEX.sub("", c_text).strip()
+                    c_text = re.sub(r'\bRascunho\b.*$', '', c_text, flags=re.I).strip()
+                    if not c_text or c_text.startswith("xxxx"):
+                        c_text = IMAGE_ALT_PLACEHOLDER
+                    alts[let] = c_text
+                circles_per_q[q_num] = alts
+    return circles_per_q
+
 def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float]], Dict[str, Any]]:
     """
     Extrai todas as questões de um caderno PDF, retornando um dicionário indexado por (número_questão, língua).
@@ -483,9 +596,12 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
     doc = pymupdf.open(pdf_path)
     doc = repair_pdf_document_fonts(doc)
 
-    # Extrai e limpa o texto das páginas
-    pages_text = [clean_page_text(doc[p].get_text("text")) for p in range(1, len(doc))]
+    # Extrai e limpa o texto das páginas respeitando as duas colunas
+    pages_text = [extract_page_column_text(doc[p]) for p in range(1, len(doc))]
     full_text = "\n".join(pages_text)
+
+    # Detecta previamente alternativas representadas por desenhos vetoriais (ex: 2010 Regular)
+    vector_circle_alts = extract_vector_circle_alternatives(doc)
 
     # Verifica se há ocorrência múltipla das Questões 1 e 2 (indicador real de Inglês/Espanhol)
     q1_count = len(re.findall(r'(?:^|\n)\s*QUEST[ÃA]O\s+1(?:\D|$)', full_text, flags=re.IGNORECASE))
@@ -513,9 +629,24 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
 
         enunciado, alts = parse_question_body(q_text)
 
+        # Se não encontrou alternativas no texto, verifica alternativas vetoriais pré-extraídas
+        if not alts and q_num in vector_circle_alts:
+            alts = vector_circle_alts[q_num]
+            first_alt = alts.get('A', '')
+            if first_alt and first_alt != IMAGE_ALT_PLACEHOLDER:
+                pos_alt = enunciado.find(first_alt)
+                if pos_alt > 0:
+                    enunciado = sanitize_question_text(enunciado[:pos_alt])
+
         # Determina se a questão contém imagem
         has_img_in_alts = any(val == IMAGE_ALT_PLACEHOLDER for val in alts.values())
         has_spatial_img = (q_num, lang) in questions_with_spatial_images
+
+        # Fallback para questões puramente gráficas sem alternativas em texto
+        if not alts and has_spatial_img:
+            alts = {let: IMAGE_ALT_PLACEHOLDER for let in 'ABCDE'}
+            has_img_in_alts = True
+
         has_image = 1 if (has_img_in_alts or has_spatial_img) else 0
 
         key = (q_num, lang)
