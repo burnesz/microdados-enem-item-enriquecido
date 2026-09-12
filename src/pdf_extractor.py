@@ -138,6 +138,86 @@ def build_calibri_cmap() -> str:
     ])
     return '\n'.join(lines)
 
+def build_symbol_cmap() -> str:
+    """
+    Constrói um CMap /ToUnicode para fontes Symbol e SymbolMT Type0 /Identity-H.
+    """
+    symbol_map = {
+        0x0020: ' ', 0x002B: '+', 0x002D: '-', 0x003D: '=', 0x002F: '/',
+        0x0070: 'π', 0x0053: 'π', 0x0061: 'α', 0x0062: 'β', 0x0067: 'γ', 0x0064: 'δ',
+        0x0071: 'θ', 0x006C: 'λ', 0x006D: 'μ', 0x0073: 'σ', 0x0077: 'ω',
+        0x0044: 'Δ', 0x0050: 'Π', 0x0057: 'Ω',
+        0x0098: '⋅', 0x00B7: '⋅', 0x00B4: '×', 0x00D7: '×', 0x0075: '×',
+        0x00A3: '≤', 0x00B3: '≥', 0x00B9: '≠', 0x00BB: '≈', 0x00B1: '±',
+        0x00B8: '÷', 0x00A5: '∞', 0x0066: '∞', 0x00B0: '°', 0x0087: '∅',
+        0x0010: '-', 0x0028: '(', 0x0029: ')', 0x005B: '[', 0x005D: ']',
+        # InDesign operadores e parênteses escaláveis para matrizes e fórmulas
+        0x001F: '-', 0x001E: '=',
+        0x001D: '(', 0x001C: '(', 0x001B: '(',
+        0x001A: ')', 0x0019: ')', 0x0018: ')'
+    }
+    for n in range(10):
+        symbol_map[0x0030 + n] = str(n)
+
+    lines = [
+        '/CIDInit /ProcSet findresource begin',
+        '12 dict begin',
+        'begincmap',
+        '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def',
+        '/CMapName /Custom-Symbol-Identity-H def',
+        '/CMapType 2 def',
+        '1 begincodespacerange',
+        '<0000> <FFFF>',
+        'endcodespacerange',
+    ]
+
+    items = list(symbol_map.items())
+    chunk_size = 100
+    for i in range(0, len(items), chunk_size):
+        chunk = items[i:i + chunk_size]
+        lines.append(f'{len(chunk)} beginbfchar')
+        for cid, ch in chunk:
+            uni_hex = ''.join(f'{ord(c):04X}' for c in ch)
+            lines.append(f'<{cid:04X}> <{uni_hex}>')
+        lines.append('endbfchar')
+
+    lines.extend([
+        'endcmap',
+        'CMapName currentdict /CMap defineresource pop',
+        'end',
+        'end'
+    ])
+    return '\n'.join(lines)
+
+# Mapeamento canônico de símbolos da fonte Symbol/SymbolMT para representação LaTeX
+SYMBOL_MAP: Dict[str, str] = {
+    'p': r'\pi', 'a': r'\alpha', 'b': r'\beta', 'g': r'\gamma', 'd': r'\delta',
+    'q': r'\theta', 'l': r'\lambda', 'm': r'\mu', 's': r'\sigma', 'w': r'\omega',
+    'D': r'\Delta', 'S': r'\pi', 'P': r'\Pi', 'W': r'\Omega',
+    '\x98': r'\cdot', '\xb7': r'\cdot', '\xb4': r'\times', '\xd7': r'\times',
+    '\xa3': r'\le', '\xb3': r'\ge', '\xb9': r'\ne', '\xbb': r'\approx', '\xb1': r'\pm',
+    '\xb0': r'^\circ', '\xb8': r'\div', '\xa5': r'\infty',
+    '\xce': r'\in', '\xcf': r'\notin', '\xcc': r'\subset', '\xcd': r'\supset',
+    '\xc7': r'\cap', '\xc8': r'\cup',
+    # Glifos de operadores e parênteses verticais do InDesign SymbolMT
+    '\x1f': '-', '\x1e': '=',
+    '\x1d': '(', '\x1c': '(', '\x1b': '(',
+    '\x1a': ')', '\x19': ')', '\x18': ')',
+    'π': r'\pi', 'Σ': r'\pi', 'α': r'\alpha', 'β': r'\beta', 'θ': r'\theta',
+    '⋅': r'\cdot', '×': r'\times', '≤': r'\le', '≥': r'\ge', '≠': r'\ne', '≈': r'\approx', '±': r'\pm'
+}
+
+# Mapeamento de caracteres matemáticos Unicode em texto padrão para LaTeX
+UNICODE_MATH_MAP: Dict[str, str] = {
+    '²': '^2', '³': '^3', '¹': '^1', '⁰': '^0', '⁴': '^4', '⁵': '^5',
+    '⁶': '^6', '⁷': '^7', '⁸': '^8', '⁹': '^9', 'ⁿ': '^n',
+    '₀': '_0', '₁': '_1', '₂': '_2', '₃': '_3', '₄': '_4',
+    '₅': '_5', '₆': '_6', '₇': '_7', '₈': '_8', '₉': '_9',
+    'π': r'\pi', 'Σ': r'\pi', '×': r'\times', '÷': r'\div', '±': r'\pm',
+    '≤': r'\le', '≥': r'\ge', '≠': r'\ne', '≈': r'\approx',
+    '•': r'\bullet', '°': r'^\circ', '⋅': r'\cdot', '√': r'\sqrt'
+}
+
 ADOBE_STANDARD_GLYPHS: Dict[str, str] = {
     'space': ' ', 'comma': ',', 'period': '.', 'hyphen': '-', 'colon': ':',
     'semicolon': ';', 'percent': '%', 'parenleft': '(', 'parenright': ')',
@@ -167,6 +247,24 @@ INDESIGN_EXTRA_CIDS: Dict[int, str] = {
 }
 
 def glyph_to_unicode(gname: str) -> Optional[str]:
+    if gname in ('g167', 'g168', 'g169'):
+        return '('
+    if gname in ('g183', 'g184', 'g185'):
+        return ')'
+    if gname == 'g152':
+        return '⋅'
+    if gname == 'g32':
+        return '='
+    if gname == 'g16':
+        return '-'
+    if gname in ('g112', 'pi'):
+        return 'π'
+    if gname in ('g97', 'alpha'):
+        return 'α'
+    if gname in ('g98', 'beta'):
+        return 'β'
+    if gname in ('g113', 'theta'):
+        return 'θ'
     if gname in ADOBE_STANDARD_GLYPHS:
         return ADOBE_STANDARD_GLYPHS[gname]
     if gname.startswith('g') and gname[1:].isdigit():
@@ -233,6 +331,7 @@ def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
     """
     indesign_bytes = build_indesign_identity_h_cmap().encode('ascii')
     calibri_bytes = build_calibri_cmap().encode('ascii')
+    symbol_bytes = build_symbol_cmap().encode('ascii')
 
     modified = False
     for xref in range(1, doc.xref_length()):
@@ -241,7 +340,12 @@ def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
             if '/Type /Font' in obj or '/Type/Font' in obj:
                 # 1. Type0 / Identity-H sem ToUnicode
                 if ('/Identity-H' in obj or '/Type0' in obj) and '/ToUnicode' not in obj:
-                    cmap_bytes = calibri_bytes if 'Calibri' in obj else indesign_bytes
+                    if 'Calibri' in obj:
+                        cmap_bytes = calibri_bytes
+                    elif 'Symbol' in obj:
+                        cmap_bytes = symbol_bytes
+                    else:
+                        cmap_bytes = indesign_bytes
                     cmap_xref = doc.get_new_xref()
                     doc.update_object(cmap_xref, f'<< /Length {len(cmap_bytes)} >>\nstream\n')
                     doc.update_stream(cmap_xref, cmap_bytes)
@@ -266,6 +370,7 @@ def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
     if modified:
         return pymupdf.open(stream=doc.tobytes(), filetype='pdf')
     return doc
+
 
 def clean_page_text(text: str) -> str:
     """
@@ -315,9 +420,44 @@ def clean_page_text(text: str) -> str:
 
     return '\n'.join(lines)
 
+def format_alternative_latex(alt: str) -> str:
+    """
+    Formata o conteúdo de uma alternativa para garantir encapsulamento
+    adequado de expressões e símbolos matemáticos em LaTeX ($ ... $).
+    """
+    alt = alt.strip()
+    if not alt or alt == IMAGE_ALT_PLACEHOLDER:
+        return alt
+
+    # Remove resíduos de ponto de multiplicação solto no final da alternativa
+    alt = re.sub(r'\s*\\cdot\s*$', '', alt).strip()
+    alt = re.sub(r'\\cdot\s*\$$', '$', alt).strip()
+
+    # Se o ponto final estiver dentro do delimitador $...$, remove ou move para fora
+    m_dot_inside = re.match(r'^\$([^$]+)\.\$$', alt)
+    if m_dot_inside:
+        alt = f"${m_dot_inside.group(1).strip()}$"
+
+    # Se já estiver encapsulado completamente entre $ ... $
+    if alt.startswith('$') and alt.endswith('$') and alt.count('$') == 2:
+        return alt
+
+    # Verifica se contém expressões ou símbolos matemáticos
+    math_symbols = [
+        r'\frac', r'\sqrt', r'\pi', r'\cdot', r'\times', r'\begin{pmatrix}',
+        '^', '_', r'\le', r'\ge', r'\ne', r'\pm', r'\circ', r'\div', r'\alpha', r'\beta', r'\theta'
+    ]
+    if any(sym in alt for sym in math_symbols):
+        if '$' not in alt:
+            has_trailing_dot = alt.endswith('.') and not alt.endswith('..')
+            inner = alt[:-1].strip() if has_trailing_dot else alt
+            return f"${inner}$"
+    return alt
+
 def sanitize_question_text(t: str) -> str:
     """
-    Remove códigos de barras, menções a rascunho e anos residuais colados no final do enunciado.
+    Remove códigos de barras, menções a rascunho e anos residuais colados no final do enunciado,
+    e formata variáveis e equações matemáticas em LaTeX ($ ... $).
     """
     t = BARCODE_REGEX.sub('', t)
     t = REDACAO_DRAFT_REGEX.sub('', t)
@@ -325,6 +465,31 @@ def sanitize_question_text(t: str) -> str:
     t = re.sub(r'\bTranscreva\s+a\s+sua\s+Reda[çc][ãa]o.*$', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\bRascunho\b.*$', '', t, flags=re.IGNORECASE)
     t = re.sub(r'(?:ENEM\s*)?20\d{2}\s*$', '', t, flags=re.IGNORECASE)
+
+    # Remove resíduos de parênteses escaláveis vazios
+    t = re.sub(r'\(\s*\)', ' ', t)
+
+    # Se há delimitadores $, processa variáveis e potências isoladas apenas fora das fórmulas já existentes
+    parts = t.split('$')
+    if len(parts) > 1 and len(parts) % 2 == 1:
+        for i in range(0, len(parts), 2):
+            seg = parts[i]
+            # Envolve variáveis indexadas isoladas: M_{1} -> $M_{1}$, E_{2} -> $E_{2}$, S_{1} -> $S_{1}$
+            seg = re.sub(r'(?<![\$\w])([A-Za-z]_[0-9A-Za-z]+|[A-Za-z]_\{[^}]+\})(?![\$\w])', r'$\1$', seg)
+            # Envolve potências numéricas isoladas: 10^{3} -> $10^{3}$
+            seg = re.sub(r'(?<![\$\w])(\d+(?:\^[0-9A-Za-z]+|\^\{[^}]+\}))(?![\$\w])', r'$\1$', seg)
+            parts[i] = seg
+        t = '$'.join(parts)
+    else:
+        t = re.sub(r'(?<![\$\w])([A-Za-z]_[0-9A-Za-z]+|[A-Za-z]_\{[^}]+\})(?![\$\w])', r'$\1$', t)
+        t = re.sub(r'(?<![\$\w])(\d+(?:\^[0-9A-Za-z]+|\^\{[^}]+\}))(?![\$\w])', r'$\1$', t)
+
+    # Converte funções matemáticas padrão para notação LaTeX apenas se não precedidas por barra invertida
+    t = re.sub(r'(?<!\\)\b(log|ln|sen|cos|tg)\b', lambda m: f"\\{m.group(1)}", t)
+
+    # Unifica múltiplos delimitadores adjacentes $$ -> $
+    t = re.sub(r'\$\$+', '$', t)
+
     return " ".join(t.split())
 
 def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
@@ -390,6 +555,8 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
 
             if not alt_content:
                 alt_content = IMAGE_ALT_PLACEHOLDER
+            else:
+                alt_content = format_alternative_latex(alt_content)
             alts[let] = alt_content
 
         clean_enunciado = sanitize_question_text(enunciado_raw)
@@ -426,12 +593,15 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
                 c_text = re.sub(r'2ª\s*aplicação.*$', '', c_text, flags=re.IGNORECASE).strip()
                 if not c_text:
                     c_text = IMAGE_ALT_PLACEHOLDER
+                else:
+                    c_text = format_alternative_latex(c_text)
                 alts[let] = c_text
             if all(k in alts for k in 'ABCDE'):
                 return sanitize_question_text(enun), alts
 
     clean_enunciado = sanitize_question_text(q_text)
     return clean_enunciado, {}
+
 
 def is_vector_figure_drawing(d: dict) -> bool:
     """
@@ -586,18 +756,419 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
 
     return questions_with_images
 
-def extract_page_column_text(page: pymupdf.Page) -> str:
+def format_span_tokens(spans_list: List[Dict[str, Any]]) -> str:
     """
-    Extrai o texto da página respeitando estritamente o layout de duas colunas:
-    primeiro a coluna esquerda (x < mid_x), depois a coluna direita (x >= mid_x).
-    Utiliza clip de cada coluna para garantir isolamento e ordenação correta das linhas.
+    Combina uma lista de spans horizontais ordenados, detectando índices (subscritos)
+    e potências (sobrescritos) baseando-se em tamanho relativo de fonte e linha de base.
+    """
+    if not spans_list:
+        return ""
+    base_size = max(s['size'] for s in spans_list)
+    base_spans = [s for s in spans_list if s['size'] >= base_size * 0.85]
+    base_orig_y = base_spans[0]['origin'][1] if base_spans else spans_list[0]['origin'][1]
+
+    out = []
+    for s in spans_list:
+        t = s['text']
+        if s['size'] < base_size * 0.85 and not s.get('is_math'):
+            if s['origin'][1] > base_orig_y + 1.2:
+                t = f"_{{{t}}}"
+            elif s['origin'][1] < base_orig_y - 1.2:
+                t = f"^{{{t}}}"
+        out.append(t)
+    res = "".join(out)
+    res = re.sub(r'\^\{([^}]+)\}\^\{([^}]+)\}', r'^{\1\2}', res)
+    res = re.sub(r'_\{([^}]+)\}_\{([^}]+)\}', r'_{\1\2}', res)
+    return res
+
+def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str:
+    """
+    Extrai o conteúdo textual de uma coluna ou região da página reconstruindo
+    fórmulas matemáticas em LaTeX bidimensionalmente (frações, raízes, potências, matrizes).
+    """
+    dict_data = page.get_text("dict", clip=clip_rect)
+    spans = []
+    for b in dict_data.get("blocks", []):
+        if "lines" in b:
+            for l in b["lines"]:
+                for s in l["spans"]:
+                    t = s["text"]
+                    if not t:
+                        continue
+                    # Filtra cabeçalhos e rodapés de página por coordenadas verticais
+                    if s["bbox"][3] <= 45.0 or s["bbox"][1] >= 737.0:
+                        continue
+                    # Filtra previamente códigos de barras e marcas d'água pesadas para não poluir índices
+                    if "ENEM20" in t or re.search(r'\*[0-9A-Za-z_–-]+\*', t):
+                        continue
+                    font = s["font"]
+                    is_lb = "Symbol" in font and (any(c in t for c in '\x1b\x1c\x1d') or any(ord(c) in (27, 28, 29) for c in t))
+                    is_rb = "Symbol" in font and (any(c in t for c in '\x18\x19\x1a') or any(ord(c) in (24, 25, 26) for c in t))
+                    if "Symbol" in font:
+                        mapped = []
+                        for ch in t:
+                            o = ord(ch)
+                            if o == 83 or ch == 'S' or o == 112:
+                                mapped.append(r'\pi')
+                            elif o in (152, 183, 8901) or ch == '⋅':
+                                mapped.append(r'\cdot')
+                            elif o == 117:
+                                mapped.append(r'\times')
+                            elif o == 16:
+                                mapped.append('-')
+                            elif o == 100:
+                                mapped.append(r'\le')
+                            elif o == 102:
+                                mapped.append(r'\infty')
+                            elif o == 135:
+                                mapped.append(r'\varnothing')
+                            elif o == 31 or ch == '\x1f':
+                                mapped.append('-')
+                            elif o == 30 or ch == '\x1e':
+                                mapped.append('=')
+                            elif o in (27, 28, 29) or ch in ('\x1b', '\x1c', '\x1d'):
+                                mapped.append('(')
+                            elif o in (24, 25, 26) or ch in ('\x18', '\x19', '\x1a'):
+                                mapped.append(')')
+                            elif ch in SYMBOL_MAP:
+                                mapped.append(SYMBOL_MAP[ch])
+                            else:
+                                mapped.append(ch)
+                        t = "".join(mapped)
+                    else:
+                        for u_ch, repl in UNICODE_MATH_MAP.items():
+                            t = t.replace(u_ch, repl)
+
+                    spans.append({
+                        "text": t,
+                        "bbox": list(s["bbox"]),
+                        "origin": list(s.get("origin", (s["bbox"][0], s["bbox"][3]))),
+                        "size": s["size"],
+                        "font": font,
+                        "is_lb": is_lb,
+                        "is_rb": is_rb,
+                        "used": False,
+                        "is_math": "Symbol" in font or any(c in t for c in [r'\pi', r'\cdot', r'\times', r'\le', r'\infty', '^', '_'])
+                    })
+
+    # Coleta desenhos vetoriais na coluna (linhas horizontais de frações e radicais)
+    hlines = []
+    radicals = []
+    for d in page.get_drawings():
+        r = d['rect']
+        if r.y0 < 40 or r.y1 > 737 or r.x1 < clip_rect.x0 or r.x0 > clip_rect.x1:
+            continue
+        items = d.get('items', [])
+        lines = [it for it in items if it[0] == 'l']
+        if len(lines) >= 4 and 8.0 <= (r.x1 - r.x0) <= 120.0 and 6.0 <= (r.y1 - r.y0) <= 35.0:
+            horiz_top = [l for l in lines if abs(l[1].y - l[2].y) < 1.0 and abs(l[1].y - r.y0) < 3.0]
+            if horiz_top:
+                radicals.append((r, horiz_top[0]))
+                continue
+
+        for it in items:
+            if it[0] == 'l':
+                p1, p2 = it[1], it[2]
+                if abs(p1.y - p2.y) < 1.0:
+                    x0, x1 = min(p1.x, p2.x), max(p1.x, p2.x)
+                    if 2.0 <= (x1 - x0) <= 80.0 and clip_rect.x0 - 5 <= x0 and x1 <= clip_rect.x1 + 5:
+                        hlines.append((x0, (p1.y + p2.y) / 2.0, x1, (p1.y + p2.y) / 2.0))
+
+    composite_elements = []
+
+    # 1. Reconstrução de Radicais (\sqrt{...} ou \sqrt[n]{...})
+    for r, h_line in radicals:
+        rx0 = min(h_line[1].x, h_line[2].x)
+        rx1 = max(h_line[1].x, h_line[2].x)
+
+        # Detecta índice/grau do radical (pequeno texto localizado junto ao gancho inicial r.x0, r.y0)
+        deg_spans = [
+            s for s in spans if not s["used"]
+            and (r.x0 - 3.0 <= s['bbox'][0] <= rx0)
+            and (r.y0 - 4.0 <= s['bbox'][1] <= r.y0 + 5.0)
+            and s['size'] <= 7.5
+        ]
+        deg_text = ""
+        if deg_spans:
+            for s in deg_spans:
+                s["used"] = True
+            deg_spans.sort(key=lambda s: s['bbox'][0])
+            deg_text = format_span_tokens(deg_spans).strip()
+
+        # Spans do radicando (devem estar sob a barra horizontal superior)
+        rad_spans = [
+            s for s in spans if not s["used"]
+            and (r.y0 - 2.0 <= s['bbox'][1] <= r.y1 - 1.0)
+            and (s['bbox'][3] <= r.y1 + 4.0)
+            and (rx0 - 4.0 <= s['bbox'][0] and s['bbox'][2] <= rx1 + 4.0)
+        ]
+        if rad_spans:
+            for s in rad_spans:
+                s["used"] = True
+            rad_spans.sort(key=lambda s: s['bbox'][0])
+            content = format_span_tokens(rad_spans).strip()
+            latex_rad = f"\\sqrt[{deg_text}]{{{content}}}" if deg_text else f"\\sqrt{{{content}}}"
+            composite_elements.append({
+                "text": latex_rad,
+                "bbox": [r.x0, r.y0, max(r.x1, rad_spans[-1]['bbox'][2]), max(r.y1, rad_spans[-1]['bbox'][3])],
+                "origin": [r.x0, r.y1],
+                "size": max(s["size"] for s in rad_spans),
+                "is_math": True
+            })
+
+    # 2. Reconstrução de Frações (\frac{num}{den})
+    for x0, y, x1, _ in sorted(hlines, key=lambda h: (h[1], h[0])):
+        num_spans = [
+            s for s in spans if not s["used"]
+            and (y - 16.0 <= s['bbox'][1] and s['bbox'][3] <= y + 1.5)
+            and (x0 - 1.5 <= (s['bbox'][0] + s['bbox'][2]) / 2.0 <= x1 + 1.5)
+        ]
+        den_spans = [
+            s for s in spans if not s["used"]
+            and (y - 1.5 <= s['bbox'][1] and s['bbox'][3] <= y + 16.0)
+            and (x0 - 1.5 <= (s['bbox'][0] + s['bbox'][2]) / 2.0 <= x1 + 1.5)
+        ]
+
+        num_comp = [
+            c for c in composite_elements if not c.get("used")
+            and (y - 16.0 <= c['bbox'][1] and c['bbox'][3] <= y + 1.5)
+            and (x0 - 2.0 <= (c['bbox'][0] + c['bbox'][2]) / 2.0 <= x1 + 2.0)
+        ]
+        den_comp = [
+            c for c in composite_elements if not c.get("used")
+            and (y - 1.5 <= c['bbox'][1] and c['bbox'][3] <= y + 16.0)
+            and (x0 - 2.0 <= (c['bbox'][0] + c['bbox'][2]) / 2.0 <= x1 + 2.0)
+        ]
+
+        all_num = num_spans + num_comp
+        all_den = den_spans + den_comp
+
+        if all_num and all_den:
+            all_num.sort(key=lambda item: item['bbox'][0])
+            all_den.sort(key=lambda item: item['bbox'][0])
+
+            num_text = format_span_tokens(all_num).strip()
+            den_text = format_span_tokens(all_den).strip()
+
+            # Valida se é uma fração legítima (descarta linhas de tabelas com palavras em português ou textos longos)
+            clean_num = re.sub(r'\\[a-zA-Z]+', '', num_text).strip()
+            clean_den = re.sub(r'\\[a-zA-Z]+', '', den_text).strip()
+            math_fn = {'log', 'sen', 'cos', 'tg', 'rad', 'det', 'max', 'min', 'lim'}
+            words_num = [w for w in re.findall(r'[a-zA-ZÀ-ÿ]{3,}', clean_num) if w.lower() not in math_fn]
+            words_den = [w for w in re.findall(r'[a-zA-ZÀ-ÿ]{3,}', clean_den) if w.lower() not in math_fn]
+
+            if words_num or words_den or len(num_text) > 35 or len(den_text) > 35:
+                continue
+
+            for s in num_spans: s["used"] = True
+            for s in den_spans: s["used"] = True
+            for c in num_comp: c["used"] = True
+            for c in den_comp: c["used"] = True
+
+            min_x = min(x0, all_num[0]['bbox'][0], all_den[0]['bbox'][0])
+            max_x = max(x1, all_num[-1]['bbox'][2], all_den[-1]['bbox'][2])
+            min_y = min(item['bbox'][1] for item in all_num)
+            max_y = max(item['bbox'][3] for item in all_den)
+
+            composite_elements.append({
+                "text": f"\\frac{{{num_text}}}{{{den_text}}}",
+                "bbox": [min_x, min_y, max_x, max_y],
+                "origin": [min_x, y],
+                "size": max(item["size"] for item in all_num + all_den),
+                "is_math": True
+            })
+
+    # 3. Reconstrução de Matrizes (\begin{pmatrix} ... \end{pmatrix})
+    lb_spans = [s for s in spans if not s["used"] and s["is_lb"]]
+    rb_spans = [s for s in spans if not s["used"] and s["is_rb"]]
+
+    lb_groups = []
+    for s in sorted(lb_spans, key=lambda s: (s['bbox'][0], s['bbox'][1])):
+        if not lb_groups or abs(s['bbox'][0] - lb_groups[-1][-1]['bbox'][0]) > 5 or abs(s['bbox'][1] - lb_groups[-1][-1]['bbox'][3]) > 10:
+            lb_groups.append([s])
+        else:
+            lb_groups[-1].append(s)
+
+    rb_groups = []
+    for s in sorted(rb_spans, key=lambda s: (s['bbox'][0], s['bbox'][1])):
+        if not rb_groups or abs(s['bbox'][0] - rb_groups[-1][-1]['bbox'][0]) > 5 or abs(s['bbox'][1] - rb_groups[-1][-1]['bbox'][3]) > 10:
+            rb_groups.append([s])
+        else:
+            rb_groups[-1].append(s)
+
+    for lg in lb_groups:
+        ly0 = min(s['bbox'][1] for s in lg)
+        ly1 = max(s['bbox'][3] for s in lg)
+        lx1 = max(s['bbox'][2] for s in lg)
+        matching_rg = [
+            rg for rg in rb_groups
+            if abs(min(s['bbox'][1] for s in rg) - ly0) < 10
+            and abs(max(s['bbox'][3] for s in rg) - ly1) < 10
+            and min(s['bbox'][0] for s in rg) > lx1
+        ]
+        if matching_rg:
+            rg = matching_rg[0]
+            rx0 = min(s['bbox'][0] for s in rg)
+            matrix_spans = [
+                s for s in spans if not s["used"]
+                and lx1 - 2 <= s['bbox'][0] and s['bbox'][2] <= rx0 + 2
+                and ly0 - 4 <= s['bbox'][1] and s['bbox'][3] <= ly1 + 4
+                and s not in lg and s not in rg
+            ]
+            if matrix_spans:
+                for s in lg + rg + matrix_spans:
+                    s["used"] = True
+                rows = []
+                for s in sorted(matrix_spans, key=lambda s: s['bbox'][1]):
+                    y_mid = (s['bbox'][1] + s['bbox'][3]) / 2.0
+                    if not rows or abs(y_mid - rows[-1][0]) > 6.0:
+                        rows.append((y_mid, [s]))
+                    else:
+                        rows[-1][1].append(s)
+                row_strs = []
+                for y_mid, r_spans in rows:
+                    r_spans.sort(key=lambda s: s['bbox'][0])
+                    row_strs.append(' & '.join(t for t in (s['text'].strip() for s in r_spans) if t))
+                mat_latex = r'\begin{pmatrix} ' + ' \\\\ '.join(row_strs) + r' \end{pmatrix}'
+                composite_elements.append({
+                    "text": mat_latex,
+                    "bbox": [min(s['bbox'][0] for s in lg), ly0, max(s['bbox'][2] for s in rg), ly1],
+                    "origin": [min(s['bbox'][0] for s in lg), ly1],
+                    "size": max(s["size"] for s in matrix_spans),
+                    "is_math": True
+                })
+
+    # 4. Agrupamento em linhas e formatação final
+    remaining = [s for s in spans if not s["used"]]
+    remaining += [c for c in composite_elements if not c.get("used")]
+
+    if not remaining:
+        return ""
+
+    # Identifica itens da linha base (tamanho de texto padrão >= 8.0)
+    base_items = [it for it in remaining if it["size"] >= 8.0]
+    if not base_items:
+        base_items = remaining
+
+    base_lines = []
+    for it in sorted(base_items, key=lambda it: (it["bbox"][1] + it["bbox"][3]) / 2.0):
+        y_mid = (it["bbox"][1] + it["bbox"][3]) / 2.0
+        if not base_lines or abs(y_mid - base_lines[-1]["y_mid"]) > 9.0:
+            base_lines.append({
+                "y_mid": y_mid,
+                "y0": it["bbox"][1],
+                "y1": it["bbox"][3],
+                "items": [it]
+            })
+        else:
+            bl = base_lines[-1]
+            bl["items"].append(it)
+            bl["y0"] = min(bl["y0"], it["bbox"][1])
+            bl["y1"] = max(bl["y1"], it["bbox"][3])
+            bl["y_mid"] = (bl["y0"] + bl["y1"]) / 2.0
+
+    non_base = [it for it in remaining if it not in base_items]
+    for it in non_base:
+        it_y_mid = (it["bbox"][1] + it["bbox"][3]) / 2.0
+        closest_bl = min(base_lines, key=lambda bl: abs(it_y_mid - bl["y_mid"]))
+        closest_bl["items"].append(it)
+
+    formatted_lines = []
+    for bl in base_lines:
+        line = bl["items"]
+        line.sort(key=lambda item: item["bbox"][0])
+        base_size = max(item["size"] for item in line)
+        base_items_in_line = [item for item in line if item["size"] >= base_size * 0.85]
+        base_orig_y = base_items_in_line[0]["origin"][1] if base_items_in_line else line[0]["origin"][1]
+
+        line_tokens = []
+        for item in line:
+            t = item["text"]
+            if item["size"] < base_size * 0.85:
+                if item["origin"][1] > base_orig_y + 1.2:
+                    t = f"_{{{t}}}"
+                elif item["origin"][1] < base_orig_y - 1.2 or (item.get("is_math") and item["bbox"][3] <= base_orig_y):
+                    t = f"^{{{t}}}"
+            line_tokens.append((t, item))
+
+        res_str = ""
+        prev_item = None
+        for t, item in line_tokens:
+            if prev_item:
+                gap = item["bbox"][0] - prev_item["bbox"][2]
+                if gap > 2.0 and not res_str.endswith(" ") and not t.startswith((" ", "^", "_")):
+                    res_str += " "
+            res_str += t
+            prev_item = item
+
+        brace_pat = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        for _ in range(3):
+            res_str = re.sub(r'\^(' + brace_pat + r')\s*\^(' + brace_pat + r')', lambda m: f"^{{{m.group(1)[1:-1].strip()} {m.group(2)[1:-1].strip()}}}", res_str)
+            res_str = re.sub(r'_(' + brace_pat + r')\s*_(' + brace_pat + r')', lambda m: f"_{{{m.group(1)[1:-1].strip()} {m.group(2)[1:-1].strip()}}}", res_str)
+        res_str = re.sub(r'\^\{([^}]+)\s+-\s*(\d+)\}', r'^{\1 - \2}', res_str)
+
+        # Colapsa múltiplos parênteses de blocos escaláveis (InDesign) em \left( e \right)
+        res_str = re.sub(r'\({2,}', lambda m: r'\left(', res_str)
+        res_str = re.sub(r'\){2,}', lambda m: r'\right)', res_str)
+
+        # Remove duplicatas de letras de alternativa consecutivas: 'A A' -> 'A'
+        res_str = re.sub(r'^([A-E])\s+\1(?:\s+|$)', r'\1 ', res_str.strip())
+
+        m_alt = re.match(r'^([A-E])\s+(.*)$', res_str.strip())
+        if m_alt:
+            alt_let = m_alt.group(1)
+            alt_body = m_alt.group(2).strip()
+            # Se a alternativa contém símbolos matemáticos, envolve em $ ... $
+            if any(sym in alt_body for sym in [r'\frac', r'\sqrt', r'\pi', r'\cdot', r'\times', r'\begin{pmatrix}', '^', '_', '=']):
+                if not alt_body.startswith('$'):
+                    alt_body = f"${alt_body}$"
+            res_str = f"{alt_let} {alt_body}"
+        elif any(sym in res_str for sym in [r'\frac', r'\sqrt', r'\begin{pmatrix}']):
+            clean_text = re.sub(r'\\[a-zA-Z]+', '', res_str)
+            prose_words = [w for w in re.findall(r'\b[a-zA-ZÀ-ÿ]{3,}\b', clean_text)]
+            if len(prose_words) >= 2:
+                # Linha de prosa contendo fórmula inline: envolve apenas as fórmulas matemáticas em $ ... $
+                res_str = re.sub(r'(\d+\s+)?(\\frac\{[^{}]+\}\{[^{}]+\})', r'$\g<0>$', res_str)
+                res_str = re.sub(r'(\\sqrt(?:\[[^\]]+\])?\{[^{}]+\})', r'$\g<0>$', res_str)
+            else:
+                # Linha de equação matemática pura: envolve a linha inteira em $ ... $
+                if not res_str.strip().startswith('$'):
+                    res_str = f"${res_str.strip()}$"
+
+        formatted_lines.append(res_str.strip())
+
+    return "\n".join(l for l in formatted_lines if l)
+
+def detect_page_column_rects(page: pymupdf.Page) -> List[pymupdf.Rect]:
+    """
+    Detecta automaticamente se a página utiliza layout de coluna única (largura total)
+    ou layout de duas colunas, evitando cortes indevidos em tabelas e fórmulas centralizadas.
     """
     mid_x = page.rect.width / 2.0
-    rect_left = pymupdf.Rect(0, 0, mid_x, page.rect.height)
-    rect_right = pymupdf.Rect(mid_x, 0, page.rect.width, page.rect.height)
-    tl = clean_page_text(page.get_text("text", clip=rect_left))
-    tr = clean_page_text(page.get_text("text", clip=rect_right))
-    return tl + "\n" + tr
+    crossing = [
+        b for b in page.get_text('blocks')
+        if b[0] < mid_x - 40 and b[2] > mid_x + 40 and b[1] > 50 and b[3] < 740 and (b[2] - b[0]) > 280
+    ]
+    if len(crossing) >= 2:
+        return [pymupdf.Rect(0, 0, page.rect.width, page.rect.height)]
+    else:
+        return [
+            pymupdf.Rect(0, 0, mid_x, page.rect.height),
+            pymupdf.Rect(mid_x, 0, page.rect.width, page.rect.height)
+        ]
+
+def extract_page_column_text(page: pymupdf.Page) -> str:
+    """
+    Extrai o texto da página respeitando a geometria das colunas e reconstruindo
+    fórmulas matemáticas em formato LaTeX padronizado.
+    """
+    column_rects = detect_page_column_rects(page)
+    col_texts = []
+    for rect in column_rects:
+        raw_col = extract_column_math_text(page, rect)
+        col_texts.append(clean_page_text(raw_col))
+    return "\n".join(col_texts)
+
 
 def extract_vector_circle_alternatives(doc: pymupdf.Document) -> Dict[int, Dict[str, str]]:
     """

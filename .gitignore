@@ -35,4 +35,7 @@ processed/*
 .DS_Store
 Thumbs.db
 
+# Scratch e arquivos temporários
+scratch/
+
 AGENTS.md

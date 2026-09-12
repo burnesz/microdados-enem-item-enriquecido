@@ -102,18 +102,20 @@ REDACAO_DRAFT_REGEX = re.compile(
 # Expressão para remover resíduos de rodapés/cabeçalhos colados no final das alternativas
 ALT_FOOTER_CLEANUP_REGEX = re.compile(
     r'(?:'
-    r'[•\-–—|]\s*(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)\b.*$|'
+    r'[•\-–—|\\bullet]?\s*(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)\b.*$|'
     r'\b(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)\s*[-–—|]\s*[12][ºo°]?\s*dia.*$|'
-    r'\b(?:CH|CN|LC|MT|RED)\s*[-–—|]\s*[12][ºo°]?\s*dia.*$|'
+    r'\b(?:\d+\s*)?(?:CH|CN|LC|MT|RED)\s*[-–—|\\bullet]?\s*[12][ºo°]?\s*dia.*$|'
     r'\b(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS[,\s]+CÓDIGOS)\s+E\s+SUAS\s+TECNOLOGIAS.*$|'
     r'\bQuestões\s+de\s+\d+\s+a\s+\d+.*$|'
-    r'[•\-–—|]?\s*CADERNO\s+\d+.*$|'
-    r'[•\-–—|]?\s*[12][ºo°]?\s*dia\s*[-–—|]\s*CADERNO.*$|'
-    r'\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE|ARELO)?\s*[-–—|]?\s*P[ÁA]GINA\s*\d+.*$|'
+    r'[•\-–—|\\bullet]?\s*(?:CADERNO|RNO)\s+\d+.*$|'
+    r'[•\-–—|\\bullet]?\s*[12][ºo°]?\s*dia\s*[-–—|]\s*CADERNO.*$|'
+    r'[•\-–—|\\bullet]?\s*(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE)?\s*[-–—|\\bullet]?\s*2[ªa]\s*APLICA[ÇC][ÃA]O.*$|'
+    r'\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE|ARELO)\s*[-–—|\\bullet]?\s*(?:P[ÁA]GINA\s*\d+|\d+\s*$)|\bP[ÁA]GINA\s*\d+\s*$|\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE)\s*\d*\s*$|'
     r'\s*RASCUNH?[\s\S]*?(?:FOLHA\s+DE\s+REDA[ÇC][ÃA]O|DA[ÇC][ÃA]O|A[ÇC][ÃA]O|Folha\s+de\s+Reda[çc][ãa]o).*$'
     r')',
     re.IGNORECASE
 )
+
 
 # Expressão para localizar cabeçalhos de questão (suporta caixa alta/baixa e número em linha separada)
 QUESTION_SPLIT_REGEX = re.compile(r'(?:^|\n)\s*QUEST[ÃA]O\s*[\n\r]*\s*(\d+)\s*', re.IGNORECASE)
