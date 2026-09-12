@@ -88,6 +88,17 @@ RUNNING_AREA_DAY_REGEX = re.compile(
     re.IGNORECASE
 )
 
+# Expressão para identificar e remover resíduos de rascunho de redação (íntegros ou fatiados pelo corte de colunas)
+REDACAO_DRAFT_REGEX = re.compile(
+    r'\s*(?:'
+    r'RASCUNH?[\s\S]*?(?:FOLHA\s+DE\s+REDA[ÇC][ÃA]O|DA[ÇC][ÃA]O|A[ÇC][ÃA]O|Folha\s+de\s+Reda[çc][ãa]o)|'
+    r'\bRASCUNHO\s+DA\s+REDA[ÇC][ÃA]O\b.*|'
+    r'\bTranscreva\s+a\s+sua\s+Reda[çc][ãa]o\b.*|'
+    r'\b(?:o\s+)?(?:para\s+a\s+)?Folha\s+de\s+Reda[çc][ãa]o\b.*'
+    r').*$',
+    re.IGNORECASE
+)
+
 # Expressão para remover resíduos de rodapés/cabeçalhos colados no final das alternativas
 ALT_FOOTER_CLEANUP_REGEX = re.compile(
     r'(?:'
@@ -98,7 +109,8 @@ ALT_FOOTER_CLEANUP_REGEX = re.compile(
     r'\bQuestões\s+de\s+\d+\s+a\s+\d+.*$|'
     r'[•\-–—|]?\s*CADERNO\s+\d+.*$|'
     r'[•\-–—|]?\s*[12][ºo°]?\s*dia\s*[-–—|]\s*CADERNO.*$|'
-    r'\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE|ARELO)?\s*[-–—|]?\s*P[ÁA]GINA\s*\d+.*$'
+    r'\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE|ARELO)?\s*[-–—|]?\s*P[ÁA]GINA\s*\d+.*$|'
+    r'\s*RASCUNH?[\s\S]*?(?:FOLHA\s+DE\s+REDA[ÇC][ÃA]O|DA[ÇC][ÃA]O|A[ÇC][ÃA]O|Folha\s+de\s+Reda[çc][ãa]o).*$'
     r')',
     re.IGNORECASE
 )

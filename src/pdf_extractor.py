@@ -14,6 +14,7 @@ from src.config import (
     RUNNING_HEADER_REGEX,
     RUNNING_AREA_DAY_REGEX,
     ALT_FOOTER_CLEANUP_REGEX,
+    REDACAO_DRAFT_REGEX,
     QUESTION_SPLIT_REGEX,
     ALT_LINE_REGEX,
     IMAGE_ALT_PLACEHOLDER
@@ -302,8 +303,8 @@ def clean_page_text(text: str) -> str:
         # Cabeçalhos ou rodapés com nome da área e dia (por extenso ou siglas CH, CN, LC, MT, RED)
         if RUNNING_AREA_DAY_REGEX.search(s):
             continue
-        # Rascunho ou banner de redação isolado
-        if re.match(r'^(?:RASCUNHO(?:\s+DA\s+REDA[ÇC][ÃA]O)?|Transcreva\s+a\s+sua\s+Reda[çc][ãa]o.*)$', s, re.IGNORECASE):
+        # Rascunho ou banner de redação isolado ou fragmentado pelo corte em duas colunas (mid_x)
+        if re.match(r'^(?:RASCUNH?|[NC]?UNHO|DA\s+RED[A-Z]?|E?DA[ÇC][ÃA]O|A[ÇC][ÃA]O|(?:o\s+)?(?:para\s+a\s+)?Folha\s+de\s+Reda[çc][ãa]o\.?|RASCUNHO(?:\s+DA\s+REDA[ÇC][ÃA]O)?|Transcreva\s+a\s+sua\s+Reda[çc][ãa]o.*)$', s, re.IGNORECASE):
             continue
         # Banners de introdução de área e intervalo de questões
         if re.match(r'^(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS[,\s]+CÓDIGOS)\s+E\s+SUAS\s+TECNOLOGIAS\s*$', s, re.IGNORECASE):
@@ -319,6 +320,7 @@ def sanitize_question_text(t: str) -> str:
     Remove códigos de barras, menções a rascunho e anos residuais colados no final do enunciado.
     """
     t = BARCODE_REGEX.sub('', t)
+    t = REDACAO_DRAFT_REGEX.sub('', t)
     t = re.sub(r'\bRASCUNHO\s+DA\s+REDA[ÇC][ÃA]O.*$', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\bTranscreva\s+a\s+sua\s+Reda[çc][ãa]o.*$', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\bRascunho\b.*$', '', t, flags=re.IGNORECASE)
@@ -377,6 +379,7 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
             # Remove qualquer resíduo de marca d'água ou rodapé no final da alternativa
             alt_content = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*)+.*$', '', alt_content, flags=re.IGNORECASE).strip()
             alt_content = ALT_FOOTER_CLEANUP_REGEX.sub('', alt_content).strip()
+            alt_content = REDACAO_DRAFT_REGEX.sub('', alt_content).strip()
             alt_content = BARCODE_REGEX.sub('', alt_content).strip()
             alt_content = re.sub(r'\bRASCUNHO\s+DA\s+REDA[ÇC][ÃA]O.*$', '', alt_content, flags=re.IGNORECASE).strip()
             alt_content = re.sub(r'\bTranscreva\s+a\s+sua\s+Reda[çc][ãa]o.*$', '', alt_content, flags=re.IGNORECASE).strip()
@@ -415,6 +418,7 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
                 content_end = group[j + 1].start() if j < 4 else len(q_text)
                 c_text = q_text[content_start:content_end].strip()
                 c_text = ALT_FOOTER_CLEANUP_REGEX.sub('', c_text).strip()
+                c_text = REDACAO_DRAFT_REGEX.sub('', c_text).strip()
                 c_text = BARCODE_REGEX.sub('', c_text).strip()
                 c_text = re.sub(r'\bRascunho\b.*$', '', c_text, flags=re.IGNORECASE).strip()
                 c_text = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*)+.*$', '', c_text, flags=re.IGNORECASE).strip()
@@ -597,7 +601,20 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
     doc = repair_pdf_document_fonts(doc)
 
     # Extrai e limpa o texto das páginas respeitando as duas colunas
-    pages_text = [extract_page_column_text(doc[p]) for p in range(1, len(doc))]
+    pages_text = []
+    for p in range(1, len(doc)):
+        page = doc[p]
+        raw_full_page = page.get_text()
+        has_quest = bool(QUESTION_SPLIT_REGEX.search(raw_full_page))
+        if not has_quest:
+            upper_raw = raw_full_page.upper()
+            # Descarta Folha de Rascunho da Redação
+            if "RASCUNHO" in upper_raw and any(k in upper_raw for k in ["REDAÇÃO", "REDACAO", "FOLHA DE REDAÇÃO", "TRANSCREVA"]):
+                continue
+            # Descarta contracapa de fechamento na última página do caderno
+            if p == len(doc) - 1:
+                continue
+        pages_text.append(extract_page_column_text(page))
     full_text = "\n".join(pages_text)
 
     # Detecta previamente alternativas representadas por desenhos vetoriais (ex: 2010 Regular)
