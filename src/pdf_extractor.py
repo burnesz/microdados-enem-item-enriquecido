@@ -282,6 +282,9 @@ def clean_page_text(text: str) -> str:
 
     # 2. Remove marcas d'água do tipo ENEM2024ENEM2024... ou com variações/erros como ENEM20E4
     text = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*){2,}', '', text, flags=re.IGNORECASE)
+    # Remove combinações de ano e código de barras no cabeçalho (ex: '2010\n*azul25dom23*')
+    text = re.sub(r'20\d{2}\s*\*[0-9A-Za-z_–-]+\*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\*[0-9A-Za-z_–-]+\*\s*20\d{2}', '', text, flags=re.IGNORECASE)
     # Remove códigos de barras *020325AZ2*
     text = BARCODE_REGEX.sub('', text)
 
@@ -297,9 +300,28 @@ def clean_page_text(text: str) -> str:
         # Cabeçalhos ou rodapés com nome da área e dia (por extenso ou siglas CH, CN, LC, MT, RED)
         if RUNNING_AREA_DAY_REGEX.search(s):
             continue
+        # Rascunho ou banner de redação isolado
+        if re.match(r'^(?:RASCUNHO(?:\s+DA\s+REDA[ÇC][ÃA]O)?|Transcreva\s+a\s+sua\s+Reda[çc][ãa]o.*)$', s, re.IGNORECASE):
+            continue
+        # Banners de introdução de área e intervalo de questões
+        if re.match(r'^(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS[,\s]+CÓDIGOS)\s+E\s+SUAS\s+TECNOLOGIAS\s*$', s, re.IGNORECASE):
+            continue
+        if re.match(r'^Questões\s+de\s+\d+\s+a\s+\d+\s*$', s, re.IGNORECASE):
+            continue
         lines.append(line)
 
     return '\n'.join(lines)
+
+def sanitize_question_text(t: str) -> str:
+    """
+    Remove códigos de barras, menções a rascunho e anos residuais colados no final do enunciado.
+    """
+    t = BARCODE_REGEX.sub('', t)
+    t = re.sub(r'\bRASCUNHO\s+DA\s+REDA[ÇC][ÃA]O.*$', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\bTranscreva\s+a\s+sua\s+Reda[çc][ãa]o.*$', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\bRascunho\b.*$', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'(?:ENEM\s*)?20\d{2}\s*$', '', t, flags=re.IGNORECASE)
+    return " ".join(t.split())
 
 def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
     """
@@ -349,15 +371,22 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
             # Remove qualquer resíduo de marca d'água ou rodapé no final da alternativa
             alt_content = re.sub(r'(ENEM\s*20[0-9A-Z]{2}\s*)+.*$', '', alt_content, flags=re.IGNORECASE).strip()
             alt_content = ALT_FOOTER_CLEANUP_REGEX.sub('', alt_content).strip()
+            alt_content = BARCODE_REGEX.sub('', alt_content).strip()
+            alt_content = re.sub(r'\bRASCUNHO\s+DA\s+REDA[ÇC][ÃA]O.*$', '', alt_content, flags=re.IGNORECASE).strip()
+            alt_content = re.sub(r'\bTranscreva\s+a\s+sua\s+Reda[çc][ãa]o.*$', '', alt_content, flags=re.IGNORECASE).strip()
+            alt_content = re.sub(r'\bRascunho\b.*$', '', alt_content, flags=re.IGNORECASE).strip()
+            # Se a alternativa não for apenas um ano (ex: '2013' ou 'A 2005'), remove ano residual do rodapé/cabeçalho
+            if not re.match(r'^(?:[A-E]\s*)?20\d{2}$', alt_content.strip()):
+                alt_content = re.sub(r'\s+20\d{2}\s*$', '', alt_content).strip()
 
             if not alt_content:
                 alt_content = IMAGE_ALT_PLACEHOLDER
             alts[let] = alt_content
 
-        clean_enunciado = " ".join(enunciado_raw.split())
+        clean_enunciado = sanitize_question_text(enunciado_raw)
         return clean_enunciado, alts
     else:
-        clean_enunciado = " ".join(q_text.split())
+        clean_enunciado = sanitize_question_text(q_text)
         return clean_enunciado, {}
 
 def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: bool) -> Set[Tuple[int, Optional[float]]]:

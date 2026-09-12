@@ -74,7 +74,7 @@ EXCLUDED_TEST_KEYWORDS = ADAPTED_TEST_KEYWORDS
 
 # Expressões regulares para limpeza de ruídos nos PDFs das provas
 WATERMARK_REGEX = re.compile(r'(ENEM\s*\d{4}\s*){2,}', re.IGNORECASE)
-BARCODE_REGEX = re.compile(r'\*[0-9A-Z]+\*')
+BARCODE_REGEX = re.compile(r'\*[0-9A-Za-z_–-]+\*', re.IGNORECASE)
 RUNNING_FOOTER_REGEX = re.compile(r'CADERNO\s+\d+\s*[-–—]\s*(AZUL|AMARELO|VERDE|BRANCO|CINZA|ROSA)', re.IGNORECASE)
 RUNNING_HEADER_REGEX = re.compile(r'^(CIÊNCIAS|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)', re.IGNORECASE)
 
@@ -94,6 +94,8 @@ ALT_FOOTER_CLEANUP_REGEX = re.compile(
     r'[•\-–—|]\s*(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)\b.*$|'
     r'\b(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS|REDAÇÃO|REDACAO)\s*[-–—|]\s*[12][ºo°]?\s*dia.*$|'
     r'\b(?:CH|CN|LC|MT|RED)\s*[-–—|]\s*[12][ºo°]?\s*dia.*$|'
+    r'\b(?:CIÊNCIAS(?:\s+DA\s+NATUREZA|\s+HUMANAS)?|MATEMÁTICA|LINGUAGENS[,\s]+CÓDIGOS)\s+E\s+SUAS\s+TECNOLOGIAS.*$|'
+    r'\bQuestões\s+de\s+\d+\s+a\s+\d+.*$|'
     r'[•\-–—|]?\s*CADERNO\s+\d+.*$|'
     r'[•\-–—|]?\s*[12][ºo°]?\s*dia\s*[-–—|]\s*CADERNO.*$'
     r')',
