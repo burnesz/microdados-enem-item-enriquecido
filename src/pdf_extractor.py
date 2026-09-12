@@ -433,9 +433,61 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
     clean_enunciado = sanitize_question_text(q_text)
     return clean_enunciado, {}
 
+def is_vector_figure_drawing(d: dict) -> bool:
+    """
+    Determina se um objeto de desenho vetorial (fitz drawing) representa
+    uma figura matemática, gráfico cartesiano ou diagrama geométrico.
+    Descarta bordas de página, cabeçalhos, rodapés, divisores decorativos,
+    linhas de tabelas (puramente ortogonais) e bolhas de alternativas.
+    """
+    rect = d.get('rect')
+    if not rect:
+        return False
+    w = rect.x1 - rect.x0
+    h = rect.y1 - rect.y0
+
+    # Margens e cabeçalho/rodapé
+    if rect.y0 < 40 or rect.y1 > 745 or rect.x0 < 25 or rect.x1 > 570:
+        return False
+
+    # Bounding boxes excessivamente grandes (moldura da página ou colunas inteiras)
+    if w > 260 or h > 450:
+        return False
+
+    # Elementos muito pequenos (bullets, bolhas de alternativas, traços minúsculos)
+    if w < 15 and h < 15:
+        return False
+
+    # Linhas uniaxiais muito finas (linhas de tabela puramente horizontais ou verticais)
+    if w < 3 or h < 3:
+        return False
+
+    for item in d.get('items', []):
+        cmd = item[0]
+        # Curvas de Bézier cúbicas (gráficos de funções, círculos, elipses, etc.)
+        if cmd == 'c' and max(w, h) >= 15:
+            return True
+        # Linhas oblíquas / diagonais (geometria, eixos inclinados, polígonos)
+        elif cmd == 'l':
+            p1, p2 = item[1], item[2]
+            dx = abs(p2.x - p1.x)
+            dy = abs(p2.y - p1.y)
+            if dx >= 6 and dy >= 6:
+                return True
+        # Quadriláteros oblíquos
+        elif cmd == 'qu':
+            q = item[1]
+            pts = [q.ul, q.ur, q.lr, q.ll, q.ul]
+            for p1, p2 in zip(pts[:-1], pts[1:]):
+                if abs(p2.x - p1.x) >= 6 and abs(p2.y - p1.y) >= 6:
+                    return True
+
+    return False
+
 def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: bool) -> Set[Tuple[int, Optional[float]]]:
     """
-    Identifica quais questões no documento PDF contêm imagens/figuras através de coordenadas espaciais.
+    Identifica quais questões no documento PDF contêm imagens/figuras através de coordenadas espaciais,
+    considerando tanto imagens raster (bitmap) quanto desenhos vetoriais (gráficos, geometrias, curvas).
     """
     q_regions = []
     seen_1 = 0
@@ -493,8 +545,9 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
     for page_num in range(1, len(doc)):
         page = doc[page_num]
         mid_x = page.rect.width / 2.0
-        images = page.get_image_info()
 
+        # 1. Detecção de imagens raster (bitmap / fotos / escaneadas)
+        images = page.get_image_info()
         for img in images:
             b = img.get('bbox')
             if not b:
@@ -506,12 +559,28 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
             if w < 25 or h < 25 or b[0] > 550 or b[1] < 35 or b[3] > 745:
                 continue
 
-            img_col = 0 if b[0] < mid_x else 1
+            img_x_mid = (b[0] + b[2]) / 2.0
+            img_col = 0 if img_x_mid < mid_x else 1
             img_y_mid = (b[1] + b[3]) / 2.0
 
             for r in q_regions:
                 if r['page'] == page_num and r['col'] == img_col:
                     if (r['y0'] - 20) <= img_y_mid <= (r['y1'] + 20):
+                        questions_with_images.add((r['num'], r['lang']))
+                        break
+
+        # 2. Detecção de figuras vetoriais (gráficos de funções, esquemas geométricos, polígonos, curvas)
+        for drawing in page.get_drawings():
+            if not is_vector_figure_drawing(drawing):
+                continue
+            rect = drawing['rect']
+            draw_x_mid = (rect.x0 + rect.x1) / 2.0
+            draw_col = 0 if draw_x_mid < mid_x else 1
+            draw_y_mid = (rect.y0 + rect.y1) / 2.0
+
+            for r in q_regions:
+                if r['page'] == page_num and r['col'] == draw_col:
+                    if (r['y0'] - 20) <= draw_y_mid <= (r['y1'] + 20):
                         questions_with_images.add((r['num'], r['lang']))
                         break
 
