@@ -111,6 +111,7 @@ ALT_FOOTER_CLEANUP_REGEX = re.compile(
     r'[•\-–—|\\bullet]?\s*[12][ºo°]?\s*dia\s*[-–—|]\s*CADERNO.*$|'
     r'[•\-–—|\\bullet]?\s*(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE)?\s*[-–—|\\bullet]?\s*2[ªa]\s*APLICA[ÇC][ÃA]O.*$|'
     r'\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE|ARELO)\s*[-–—|\\bullet]?\s*(?:P[ÁA]GINA\s*\d+|\d+\s*$)|\bP[ÁA]GINA\s*\d+\s*$|\b(?:AMARELO|AZUL|CINZA|ROSA|BRANCO|VERDE)\s*\d*\s*$|'
+    r'\bTexto\s+(?:comum\s+)?para\s+as?\s+quest[õo]es?\s+\d+.*$|'
     r'\s*RASCUNH?[\s\S]*?(?:FOLHA\s+DE\s+REDA[ÇC][ÃA]O|DA[ÇC][ÃA]O|A[ÇC][ÃA]O|Folha\s+de\s+Reda[çc][ãa]o).*$'
     r')',
     re.IGNORECASE

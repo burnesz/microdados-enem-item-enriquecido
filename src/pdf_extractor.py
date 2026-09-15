@@ -397,6 +397,10 @@ def clean_page_text(text: str) -> str:
     lines = []
     for line in text.split('\n'):
         s = line.strip()
+        if not s:
+            continue
+        # Remove qualquer resíduo defensivo de ^{...} ou _{...} antes de QUESTÃO
+        s = re.sub(r'^(?:[\^_]\{[^}]*\}\s*)+', '', s)
         # Rodapé com menção a caderno ou dia
         if re.search(r'CADERNO\s+\d+', s, re.IGNORECASE) and any(c in s.upper() for c in ['AZUL', 'AMARELO', 'VERDE', 'BRANCO', 'CINZA', 'ROSA', 'PÁGINA', 'PAGINA']):
             continue
@@ -404,6 +408,9 @@ def clean_page_text(text: str) -> str:
             continue
         # Números de página isolados
         if re.match(r'^\d{1,2}$', s):
+            continue
+        # Ano isolado (ex: 2014, 2015, ENEM 2014) no topo da coluna
+        if re.match(r'^(?:ENEM\s*)?20\d{2}\s*$', s, re.IGNORECASE):
             continue
         # Cabeçalhos ou rodapés com nome da área e dia (por extenso ou siglas CH, CN, LC, MT, RED)
         if RUNNING_AREA_DAY_REGEX.search(s):
@@ -416,7 +423,7 @@ def clean_page_text(text: str) -> str:
             continue
         if re.match(r'^Questões\s+de\s+\d+\s+a\s+\d+\s*$', s, re.IGNORECASE):
             continue
-        lines.append(line)
+        lines.append(s)
 
     return '\n'.join(lines)
 
@@ -466,8 +473,9 @@ def sanitize_question_text(t: str) -> str:
     t = re.sub(r'\bRascunho\b.*$', '', t, flags=re.IGNORECASE)
     t = re.sub(r'(?:ENEM\s*)?20\d{2}\s*$', '', t, flags=re.IGNORECASE)
 
-    # Remove resíduos de parênteses escaláveis vazios
+    # Remove resíduos de parênteses escaláveis vazios e sobrescritos/subscritos vazios
     t = re.sub(r'\(\s*\)', ' ', t)
+    t = re.sub(r'[\^_]\{\s*\}', '', t)
 
     # Se há delimitadores $, processa variáveis e potências isoladas apenas fora das fórmulas já existentes
     parts = t.split('$')
@@ -575,7 +583,7 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
     for i in range(len(matches) - 5, -1, -1):
         group = matches[i:i + 5]
         letters = [m.group(1) for m in group]
-        if set(letters) == {'A', 'B', 'C', 'D', 'E'}:
+        if group[0].group(1) == 'A' and set(letters) == {'A', 'B', 'C', 'D', 'E'}:
             start_pos = group[0].start()
             enun = q_text[:start_pos].strip()
             alts = {}
@@ -793,13 +801,16 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
             for l in b["lines"]:
                 for s in l["spans"]:
                     t = s["text"]
-                    if not t:
+                    # Ignora spans contendo apenas espaços em branco
+                    if not t or not t.strip():
                         continue
                     # Filtra cabeçalhos e rodapés de página por coordenadas verticais
                     if s["bbox"][3] <= 45.0 or s["bbox"][1] >= 737.0:
                         continue
-                    # Filtra previamente códigos de barras e marcas d'água pesadas para não poluir índices
-                    if "ENEM20" in t or re.search(r'\*[0-9A-Za-z_–-]+\*', t):
+                    # Filtra marcas d'água e divisores verticais de coluna
+                    if re.search(r'(ENEM\s*20[0-9A-Z]{2}\s*){2,}', t, re.IGNORECASE) or (s["bbox"][3] - s["bbox"][1]) > 50.0:
+                        continue
+                    if re.search(r'\*[0-9A-Za-z_–-]+\*', t):
                         continue
                     font = s["font"]
                     is_lb = "Symbol" in font and (any(c in t for c in '\x1b\x1c\x1d') or any(ord(c) in (27, 28, 29) for c in t))
@@ -1045,37 +1056,28 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
     if not remaining:
         return ""
 
-    # Identifica itens da linha base (tamanho de texto padrão >= 8.0)
-    base_items = [it for it in remaining if it["size"] >= 8.0]
-    if not base_items:
-        base_items = remaining
+    sorted_items = sorted(remaining, key=lambda it: (it["bbox"][1] + it["bbox"][3]) / 2.0)
 
-    base_lines = []
-    for it in sorted(base_items, key=lambda it: (it["bbox"][1] + it["bbox"][3]) / 2.0):
+    lines = []
+    for it in sorted_items:
         y_mid = (it["bbox"][1] + it["bbox"][3]) / 2.0
-        if not base_lines or abs(y_mid - base_lines[-1]["y_mid"]) > 9.0:
-            base_lines.append({
+        # Spans pertencem à mesma linha apenas se a distância vertical for de até 4.5 pontos
+        if lines and abs(y_mid - lines[-1]["y_mid"]) <= 4.5:
+            lines[-1]["items"].append(it)
+            lines[-1]["y0"] = min(lines[-1]["y0"], it["bbox"][1])
+            lines[-1]["y1"] = max(lines[-1]["y1"], it["bbox"][3])
+            lines[-1]["y_mid"] = (lines[-1]["y0"] + lines[-1]["y1"]) / 2.0
+        else:
+            lines.append({
                 "y_mid": y_mid,
                 "y0": it["bbox"][1],
                 "y1": it["bbox"][3],
                 "items": [it]
             })
-        else:
-            bl = base_lines[-1]
-            bl["items"].append(it)
-            bl["y0"] = min(bl["y0"], it["bbox"][1])
-            bl["y1"] = max(bl["y1"], it["bbox"][3])
-            bl["y_mid"] = (bl["y0"] + bl["y1"]) / 2.0
-
-    non_base = [it for it in remaining if it not in base_items]
-    for it in non_base:
-        it_y_mid = (it["bbox"][1] + it["bbox"][3]) / 2.0
-        closest_bl = min(base_lines, key=lambda bl: abs(it_y_mid - bl["y_mid"]))
-        closest_bl["items"].append(it)
 
     formatted_lines = []
-    for bl in base_lines:
-        line = bl["items"]
+    for line_dict in lines:
+        line = line_dict["items"]
         line.sort(key=lambda item: item["bbox"][0])
         base_size = max(item["size"] for item in line)
         base_items_in_line = [item for item in line if item["size"] >= base_size * 0.85]
@@ -1084,7 +1086,7 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
         line_tokens = []
         for item in line:
             t = item["text"]
-            if item["size"] < base_size * 0.85:
+            if item["size"] < base_size * 0.85 and t.strip():
                 if item["origin"][1] > base_orig_y + 1.2:
                     t = f"_{{{t}}}"
                 elif item["origin"][1] < base_orig_y - 1.2 or (item.get("is_math") and item["bbox"][3] <= base_orig_y):
@@ -1096,7 +1098,7 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
         for t, item in line_tokens:
             if prev_item:
                 gap = item["bbox"][0] - prev_item["bbox"][2]
-                if gap > 2.0 and not res_str.endswith(" ") and not t.startswith((" ", "^", "_")):
+                if gap > 1.8 and not res_str.endswith(" ") and not t.startswith((" ", "^", "_")):
                     res_str += " "
             res_str += t
             prev_item = item
@@ -1114,16 +1116,10 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
         # Remove duplicatas de letras de alternativa consecutivas: 'A A' -> 'A'
         res_str = re.sub(r'^([A-E])\s+\1(?:\s+|$)', r'\1 ', res_str.strip())
 
-        m_alt = re.match(r'^([A-E])\s+(.*)$', res_str.strip())
-        if m_alt:
-            alt_let = m_alt.group(1)
-            alt_body = m_alt.group(2).strip()
-            # Se a alternativa contém símbolos matemáticos, envolve em $ ... $
-            if any(sym in alt_body for sym in [r'\frac', r'\sqrt', r'\pi', r'\cdot', r'\times', r'\begin{pmatrix}', '^', '_', '=']):
-                if not alt_body.startswith('$'):
-                    alt_body = f"${alt_body}$"
-            res_str = f"{alt_let} {alt_body}"
-        elif any(sym in res_str for sym in [r'\frac', r'\sqrt', r'\begin{pmatrix}']):
+        # Limpeza defensiva de sobrescrito ou subscrito vazio
+        res_str = re.sub(r'[\^_]\{\s*\}', '', res_str)
+
+        if any(sym in res_str for sym in [r'\frac', r'\sqrt', r'\begin{pmatrix}']):
             clean_text = re.sub(r'\\[a-zA-Z]+', '', res_str)
             prose_words = [w for w in re.findall(r'\b[a-zA-ZÀ-ÿ]{3,}\b', clean_text)]
             if len(prose_words) >= 2:
@@ -1131,8 +1127,8 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
                 res_str = re.sub(r'(\d+\s+)?(\\frac\{[^{}]+\}\{[^{}]+\})', r'$\g<0>$', res_str)
                 res_str = re.sub(r'(\\sqrt(?:\[[^\]]+\])?\{[^{}]+\})', r'$\g<0>$', res_str)
             else:
-                # Linha de equação matemática pura: envolve a linha inteira em $ ... $
-                if not res_str.strip().startswith('$'):
+                # Linha de equação matemática pura (não inicia por letra de alternativa isolada)
+                if not res_str.strip().startswith('$') and not re.match(r'^[A-E]\b', res_str.strip()):
                     res_str = f"${res_str.strip()}$"
 
         formatted_lines.append(res_str.strip())
