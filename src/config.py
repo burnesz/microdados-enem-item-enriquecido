@@ -117,6 +117,37 @@ ALT_FOOTER_CLEANUP_REGEX = re.compile(
     re.IGNORECASE
 )
 
+# Expressão para identificar referências textuais explícitas a figuras, gráficos, mapas e esquemas
+EXPLICIT_IMAGE_REGEX = re.compile(
+    r'\b(?:'
+    r'indicad[ao]s?\s+na\s+figura|'
+    r'conforme\s+(?:a\s+)?figura|'
+    r'como\s+(?:mostra|ilustra|se\s+v[eê])\s+a\s+figura|'
+    r'como\s+na\s+figura|'
+    r'ilustrad[ao]\s+na\s+figura|'
+    r'apresentad[ao]\s+na\s+figura|'
+    r'mostrad[ao]\s+na\s+figura|'
+    r'representad[ao]\s+na\s+figura|'
+    r'observada?\s+na\s+figura|'
+    r'destacad[ao]s?\s+na\s+figura|'
+    r'reproduzid[ao]\s+na\s+figura|'
+    r'esboçad[ao]\s+na\s+figura|'
+    r'v[eê]-se\s+na\s+figura|'
+    r'o\s+gr[aá]fico\s+(?:a\s+seguir|abaixo|apresenta|mostra|indica|ilustra|representa)|'
+    r'no\s+gr[aá]fico\s+(?:a\s+seguir|abaixo)|'
+    r'os\s+gr[aá]ficos\s+(?:a\s+seguir|abaixo|apresentam|mostram)|'
+    r'conforme\s+o\s+gr[aá]fico|'
+    r'como\s+(?:mostra|ilustra)\s+o\s+gr[aá]fico|'
+    r'no\s+esquema\s+(?:a\s+seguir|abaixo)|'
+    r'conforme\s+o\s+esquema|'
+    r'como\s+mostra\s+o\s+esquema|'
+    r'indicad[ao]s?\s+no\s+esquema|'
+    r'no\s+mapa\s+(?:a\s+seguir|abaixo)|'
+    r'indicad[ao]s?\s+no\s+mapa'
+    r')\b',
+    re.IGNORECASE
+)
+
 
 # Expressão para localizar cabeçalhos de questão (suporta caixa alta/baixa e número em linha separada)
 QUESTION_SPLIT_REGEX = re.compile(r'(?:^|\n)\s*QUEST[ÃA]O\s*[\n\r]*\s*(\d+)\s*', re.IGNORECASE)

@@ -17,7 +17,8 @@ from src.config import (
     REDACAO_DRAFT_REGEX,
     QUESTION_SPLIT_REGEX,
     ALT_LINE_REGEX,
-    IMAGE_ALT_PLACEHOLDER
+    IMAGE_ALT_PLACEHOLDER,
+    EXPLICIT_IMAGE_REGEX
 )
 
 def build_indesign_identity_h_cmap() -> str:
@@ -632,32 +633,58 @@ def is_vector_figure_drawing(d: dict) -> bool:
     if w > 260 or h > 450:
         return False
 
-    # Elementos muito pequenos (bullets, bolhas de alternativas, traços minúsculos)
-    if w < 15 and h < 15:
+    # Linha divisória de coluna vertical da página (ex: x~283.5, h > 400)
+    if w < 1.0 and h > 400:
         return False
 
-    # Linhas uniaxiais muito finas (linhas de tabela puramente horizontais ou verticais)
-    if w < 3 or h < 3:
+    # Linhas de cabeçalho da página ou divisórias horizontais completas
+    if h < 1.0 and w > 230 and (rect.y0 < 85 or rect.y1 > 730):
         return False
 
-    for item in d.get('items', []):
+    items = d.get('items', [])
+    if not items:
+        return False
+
+    # 1. Curvas de Bézier cúbicas (gráficos de funções, círculos, elipses, arcos)
+    for item in items:
         cmd = item[0]
-        # Curvas de Bézier cúbicas (gráficos de funções, círculos, elipses, etc.)
-        if cmd == 'c' and max(w, h) >= 15:
+        if cmd == 'c' and max(w, h) >= 12:
             return True
-        # Linhas oblíquas / diagonais (geometria, eixos inclinados, polígonos)
-        elif cmd == 'l':
+
+    # 2. Retângulos geométricos (caixas de gráficos, polígonos, cômodos de plantas, molduras de diagramas)
+    for item in items:
+        cmd = item[0]
+        if cmd == 're':
+            # Formas 2D com dimensões expressivas.
+            # Tabelas sempre ocupam a largura inteira da coluna (w >= 230), portanto limitamos w < 230.
+            if min(w, h) >= 15 and w < 230 and h < 350:
+                return True
+            # Barras de gráficos de colunas / barras (ex: w=4..40, h>=15)
+            if min(w, h) >= 4.0 and max(w, h) >= 15.0 and min(w, h) <= 40.0 and w < 230:
+                return True
+
+    # 3. Linhas oblíquas / diagonais (geometria, eixos inclinados, polígonos)
+    for item in items:
+        cmd = item[0]
+        if cmd == 'l':
             p1, p2 = item[1], item[2]
             dx = abs(p2.x - p1.x)
             dy = abs(p2.y - p1.y)
-            if dx >= 6 and dy >= 6:
+            if dx >= 5 and dy >= 5:
                 return True
-        # Quadriláteros oblíquos
-        elif cmd == 'qu':
+
+    # 4. Polilinhas / caminhos conectados multi-segmentos (rotas, setas, polígonos ortogonais)
+    line_items = [it for it in items if it[0] == 'l']
+    if len(line_items) >= 3 and w >= 15 and h >= 15 and w < 230:
+        return True
+
+    # 5. Quadriláteros oblíquos
+    for item in items:
+        if item[0] == 'qu':
             q = item[1]
             pts = [q.ul, q.ur, q.lr, q.ll, q.ul]
             for p1, p2 in zip(pts[:-1], pts[1:]):
-                if abs(p2.x - p1.x) >= 6 and abs(p2.y - p1.y) >= 6:
+                if abs(p2.x - p1.x) >= 5 and abs(p2.y - p1.y) >= 5:
                     return True
 
     return False
@@ -1302,8 +1329,8 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
             # Limpa possíveis resíduos de letras de alternativas no fim do enunciado
             enunciado = re.sub(r'(?:[\s\n]*[A-E]\b[\s\n]*){3,10}(?:2ª\s*aplicação)?\s*$', '', enunciado, flags=re.I).strip()
             enunciado = sanitize_question_text(enunciado)
-
-        has_image = 1 if (has_img_in_alts or has_spatial_img) else 0
+        has_explicit_ref = bool(EXPLICIT_IMAGE_REGEX.search(enunciado))
+        has_image = 1 if (has_img_in_alts or has_spatial_img or has_explicit_ref) else 0
 
         key = (q_num, lang)
         parsed_questions[key] = {
