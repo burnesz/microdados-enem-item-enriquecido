@@ -689,6 +689,58 @@ def is_vector_figure_drawing(d: dict) -> bool:
 
     return False
 
+def detect_page_column_rects(page: pymupdf.Page) -> List[pymupdf.Rect]:
+    """
+    Detecta automaticamente se a página utiliza layout de coluna única (largura total)
+    ou layout de duas colunas, evitando cortes indevidos em tabelas e fórmulas centralizadas.
+    """
+    mid_x = page.rect.width / 2.0
+    crossing = [
+        b for b in page.get_text('blocks')
+        if b[0] < mid_x - 40 and b[2] > mid_x + 40 and b[1] > 50 and b[3] < 740 and (b[2] - b[0]) > 280
+    ]
+    if len(crossing) >= 2:
+        return [pymupdf.Rect(0, 0, page.rect.width, page.rect.height)]
+    else:
+        return [
+            pymupdf.Rect(0, 0, mid_x, page.rect.height),
+            pymupdf.Rect(mid_x, 0, page.rect.width, page.rect.height)
+        ]
+
+def is_vector_cluster_noise(d: dict) -> bool:
+    """
+    Identifica elementos gráficos que não compõem figuras geométricas/diagramas reais,
+    como réguas divisórias, margens, barras de fração horizontais e linhas de tabelas.
+    """
+    rect = d.get('rect')
+    if not rect:
+        return True
+    w = rect.x1 - rect.x0
+    h = rect.y1 - rect.y0
+    # Margens e réguas de cabeçalho / rodapé / coluna
+    if rect.y0 < 40 or rect.y1 > 745 or rect.x0 < 25 or rect.x1 > 570:
+        return True
+    if w < 1.0 and h > 300:
+        return True
+    if h < 1.5 and w > 200:
+        return True
+    # Traços decorativos de título (hatching fino no cabeçalho)
+    if h <= 4.0 and w > 50:
+        return True
+    # Filtra barras de fração puras ou linhas retas isoladas
+    items = d.get('items', [])
+    if len(items) == 1 and items[0][0] == 'l':
+        p1, p2 = items[0][1], items[0][2]
+        if abs(p1.y - p2.y) < 1.0 and abs(p1.x - p2.x) <= 80.0:
+            return True
+        # Filtra linhas retas ortogonais puras (bordas de grade de tabela)
+        if abs(p1.x - p2.x) < 0.5 or abs(p1.y - p2.y) < 0.5:
+            return True
+    # Filtra pontos/bullets minúsculos
+    if max(w, h) <= 5.0:
+        return True
+    return False
+
 def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: bool) -> Set[Tuple[int, Optional[float]]]:
     """
     Identifica quais questões no documento PDF contêm imagens/figuras através de coordenadas espaciais,
@@ -696,53 +748,90 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
     """
     q_regions = []
     seen_1 = 0
+    current_q = None
+    current_lang = None
 
     for page_num in range(1, len(doc)):
         page = doc[page_num]
         mid_x = page.rect.width / 2.0
-        blocks = page.get_text("blocks")
+        col_rects = detect_page_column_rects(page)
+        is_single_col = (len(col_rects) == 1)
+        blocks = [b for b in page.get_text("blocks") if 40 < b[1] < 745]
 
-        left = [b for b in blocks if b[0] < mid_x and 40 < b[1] < 745]
-        right = [b for b in blocks if b[0] >= mid_x and 40 < b[1] < 745]
-        left.sort(key=lambda b: b[1])
-        right.sort(key=lambda b: b[1])
+        if is_single_col:
+            columns = [sorted(blocks, key=lambda b: b[1])]
+        else:
+            left = sorted([b for b in blocks if b[0] < mid_x], key=lambda b: b[1])
+            right = sorted([b for b in blocks if b[0] >= mid_x], key=lambda b: b[1])
+            columns = [left, right]
 
-        for col_idx, col_blocks in enumerate([left, right]):
-            current_q = None
-            current_lang = None
-            q_start_y = 40.0
-            for b in col_blocks:
+        for col_idx, col_blocks in enumerate(columns):
+            if not col_blocks:
+                continue
+
+            # Localiza cabeçalhos de questão nesta coluna
+            header_indices = []
+            for i, b in enumerate(col_blocks):
                 m = re.search(r'QUEST[ÃA]O\s*[\n\r]*\s*(\d+)', b[4], re.IGNORECASE)
                 if m:
-                    q_num = int(m.group(1))
-                    lang = None
-                    if has_duplicate_languages:
-                        if q_num == 1:
-                            seen_1 += 1
-                        if q_num <= 5:
-                            lang = 0.0 if seen_1 == 1 else 1.0
+                    header_indices.append((i, int(m.group(1)), b))
 
-                    if current_q is not None:
-                        q_regions.append({
-                            'num': current_q,
-                            'lang': current_lang,
-                            'page': page_num,
-                            'col': col_idx,
-                            'y0': q_start_y,
-                            'y1': b[1]
-                        })
-                    current_q = q_num
-                    current_lang = lang
-                    q_start_y = b[1]
+            # Se não há cabeçalhos na coluna, toda a coluna é continuação da questão anterior
+            if not header_indices:
+                if current_q is not None:
+                    q_regions.append({
+                        'num': current_q,
+                        'lang': current_lang,
+                        'page': page_num,
+                        'col': col_idx,
+                        'is_single_col': is_single_col,
+                        'y0': col_blocks[0][1],
+                        'header_y1': col_blocks[0][1],
+                        'y1': col_blocks[-1][3]
+                    })
+                continue
 
-            if current_q is not None:
+            # Se há blocos de conteúdo antes do primeiro cabeçalho, pertencem à questão anterior
+            first_header_idx, first_header_num, first_header_block = header_indices[0]
+            if first_header_idx > 0 and current_q is not None:
                 q_regions.append({
                     'num': current_q,
                     'lang': current_lang,
                     'page': page_num,
                     'col': col_idx,
+                    'is_single_col': is_single_col,
+                    'y0': col_blocks[0][1],
+                    'header_y1': col_blocks[0][1],
+                    'y1': first_header_block[1]
+                })
+
+            for k, (h_idx, q_num, h_block) in enumerate(header_indices):
+                lang = None
+                if has_duplicate_languages:
+                    if q_num == 1:
+                        seen_1 += 1
+                    if q_num <= 5:
+                        lang = 0.0 if seen_1 == 1 else 1.0
+
+                current_q = q_num
+                current_lang = lang
+                q_start_y = h_block[1]
+                header_bottom_y = h_block[3]
+
+                if k + 1 < len(header_indices):
+                    next_y = header_indices[k + 1][2][1]
+                else:
+                    next_y = col_blocks[-1][3]
+
+                q_regions.append({
+                    'num': current_q,
+                    'lang': current_lang,
+                    'page': page_num,
+                    'col': col_idx,
+                    'is_single_col': is_single_col,
                     'y0': q_start_y,
-                    'y1': 745.0
+                    'header_y1': header_bottom_y,
+                    'y1': next_y
                 })
 
     questions_with_images = set()
@@ -750,6 +839,9 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
     for page_num in range(1, len(doc)):
         page = doc[page_num]
         mid_x = page.rect.width / 2.0
+        col_rects = detect_page_column_rects(page)
+        is_single_col = (len(col_rects) == 1)
+        page_q_regions = [r for r in q_regions if r['page'] == page_num]
 
         # 1. Detecção de imagens raster (bitmap / fotos / escaneadas)
         images = page.get_image_info()
@@ -765,29 +857,80 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
                 continue
 
             img_x_mid = (b[0] + b[2]) / 2.0
-            img_col = 0 if img_x_mid < mid_x else 1
+            img_col = 0 if (is_single_col or img_x_mid < mid_x) else 1
             img_y_mid = (b[1] + b[3]) / 2.0
 
-            for r in q_regions:
-                if r['page'] == page_num and r['col'] == img_col:
+            for r in page_q_regions:
+                if r['is_single_col'] or r['col'] == img_col:
                     if (r['y0'] - 20) <= img_y_mid <= (r['y1'] + 20):
                         questions_with_images.add((r['num'], r['lang']))
                         break
 
-        # 2. Detecção de figuras vetoriais (gráficos de funções, esquemas geométricos, polígonos, curvas)
-        for drawing in page.get_drawings():
+        # 2. Detecção de tabelas estruturadas (page.find_tables())
+        try:
+            tabs = page.find_tables()
+            for tab in tabs.tables:
+                if tab.row_count >= 2 and tab.col_count >= 2:
+                    t_bbox = tab.bbox
+                    t_mid_x = (t_bbox[0] + t_bbox[2]) / 2.0
+                    t_col = 0 if (is_single_col or t_mid_x < mid_x) else 1
+                    t_mid_y = (t_bbox[1] + t_bbox[3]) / 2.0
+                    for r in page_q_regions:
+                        if r['is_single_col'] or r['col'] == t_col:
+                            if (r['y0'] - 15) <= t_mid_y <= (r['y1'] + 15):
+                                questions_with_images.add((r['num'], r['lang']))
+                                break
+        except Exception:
+            pass
+
+        # 3. Detecção de figuras vetoriais (gráficos de funções, esquemas geométricos, polígonos, curvas)
+        page_drawings = page.get_drawings()
+
+        # 3a. Checagem individual via is_vector_figure_drawing
+        for drawing in page_drawings:
             if not is_vector_figure_drawing(drawing):
                 continue
             rect = drawing['rect']
             draw_x_mid = (rect.x0 + rect.x1) / 2.0
-            draw_col = 0 if draw_x_mid < mid_x else 1
+            draw_col = 0 if (is_single_col or draw_x_mid < mid_x) else 1
             draw_y_mid = (rect.y0 + rect.y1) / 2.0
 
-            for r in q_regions:
-                if r['page'] == page_num and r['col'] == draw_col:
+            for r in page_q_regions:
+                if r['is_single_col'] or r['col'] == draw_col:
                     if (r['y0'] - 20) <= draw_y_mid <= (r['y1'] + 20):
                         questions_with_images.add((r['num'], r['lang']))
                         break
+
+        # 2b. Checagem de cluster vetorial (para esquemas compostos por curvas de Bézier agrupadas)
+        for r in page_q_regions:
+            if (r['num'], r['lang']) in questions_with_images:
+                continue
+
+            body_y0 = r['header_y1'] + 2.0
+            q_col = r['col']
+
+            q_drawings = []
+            for d in page_drawings:
+                if is_vector_cluster_noise(d):
+                    continue
+                rect = d['rect']
+                d_mid_x = (rect.x0 + rect.x1) / 2.0
+                d_col = 0 if (r['is_single_col'] or d_mid_x < mid_x) else 1
+                d_mid_y = (rect.y0 + rect.y1) / 2.0
+
+                if (r['is_single_col'] or d_col == q_col) and (body_y0 <= d_mid_y <= r['y1'] + 10):
+                    q_drawings.append(d)
+
+            beziers = sum(1 for d in q_drawings if any(it[0] == 'c' for it in d.get('items', [])))
+            if q_drawings:
+                min_x = min(d['rect'].x0 for d in q_drawings)
+                max_x = max(d['rect'].x1 for d in q_drawings)
+                min_y = min(d['rect'].y0 for d in q_drawings)
+                max_y = max(d['rect'].y1 for d in q_drawings)
+                span_w = max_x - min_x
+                span_h = max_y - min_y
+                if beziers >= 6 and span_w >= 25 and span_h >= 10:
+                    questions_with_images.add((r['num'], r['lang']))
 
     return questions_with_images
 
@@ -954,8 +1097,21 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
                 "is_math": True
             })
 
+    # Detecta caixas delimitadoras de tabelas para proteger suas linhas internas de virarem frações
+    tab_rects = []
+    try:
+        tabs = page.find_tables()
+        for t in tabs.tables:
+            if t.row_count >= 2 and t.col_count >= 2:
+                tab_rects.append(pymupdf.Rect(t.bbox))
+    except Exception:
+        pass
+
     # 2. Reconstrução de Frações (\frac{num}{den})
     for x0, y, x1, _ in sorted(hlines, key=lambda h: (h[1], h[0])):
+        # Ignora linhas horizontais que interceptam tabelas estruturadas
+        if any(r.intersects(pymupdf.Rect(x0, y - 2.0, x1, y + 2.0)) for r in tab_rects):
+            continue
         num_spans = [
             s for s in spans if not s["used"]
             and (y - 16.0 <= s['bbox'][1] and s['bbox'][3] <= y + 1.5)
@@ -1162,23 +1318,6 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
 
     return "\n".join(l for l in formatted_lines if l)
 
-def detect_page_column_rects(page: pymupdf.Page) -> List[pymupdf.Rect]:
-    """
-    Detecta automaticamente se a página utiliza layout de coluna única (largura total)
-    ou layout de duas colunas, evitando cortes indevidos em tabelas e fórmulas centralizadas.
-    """
-    mid_x = page.rect.width / 2.0
-    crossing = [
-        b for b in page.get_text('blocks')
-        if b[0] < mid_x - 40 and b[2] > mid_x + 40 and b[1] > 50 and b[3] < 740 and (b[2] - b[0]) > 280
-    ]
-    if len(crossing) >= 2:
-        return [pymupdf.Rect(0, 0, page.rect.width, page.rect.height)]
-    else:
-        return [
-            pymupdf.Rect(0, 0, mid_x, page.rect.height),
-            pymupdf.Rect(mid_x, 0, page.rect.width, page.rect.height)
-        ]
 
 def extract_page_column_text(page: pymupdf.Page) -> str:
     """
