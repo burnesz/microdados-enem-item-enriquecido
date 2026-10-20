@@ -10,6 +10,21 @@ O resultado final é uma base consolidada com **mais de 5.000 itens calibrados p
 
 ---
 
+## 💡 Motivação e Propósito do Projeto
+
+O INEP disponibiliza os microdados do ENEM anualmente, porém as informações de cada questão encontram-se **completamente fragmentadas e desconectadas**:
+
+1. **Dados Tabulares em CSV (`ITENS_PROVA_{ANO}.csv`)**: Apresentam os parâmetros psicométricos da Teoria de Resposta ao Item (TRI — parâmetros $a$, $b$, $c$), o gabarito oficial e os códigos da Matriz de Referência, mas **não contêm o texto nem as alternativas das questões**.
+2. **Conteúdo Textual em PDF (Cadernos de Prova)**: Os enunciados completos, textos-base, figuras e as cinco alternativas (A a E) estão contidos apenas nos cadernos físicos de prova em formato PDF.
+3. **Ausência de Mapeamento Explícito**: Nos microdados do INEP **não existe nenhuma chave estrangeira direta nem indicação do nome do arquivo PDF** correspondente ao item. Para complicar, a nomenclatura dos arquivos PDF muda frequentemente entre as edições, com pastas aninhadas e ausência de convenção uniforme.
+
+**O propósito deste repositório** é solucionar esse gargalo criando uma ponte automatizada e reprodutível entre o mundo tabular e o mundo não-estruturado:
+- Mapeia deterministicamente cada item do CSV ao seu caderno em PDF via inspeção inteligente de capa (*content fingerprinting*), sem depender de nomes rígidos de arquivos.
+- Extrai, sanitiza e segmenta enunciados, alternativas A–E e sinaliza a presença de imagens/gráficos via PyMuPDF.
+- Entrega uma **base de dados analítica enriquecida, unificada e pronta para uso** em pesquisas educacionais, psicometria, Ciência de Dados e Processamento de Linguagem Natural (PLN / LLMs).
+
+---
+
 ## 🎯 Metodologia e Escopo
 
 Cada edição do ENEM aplica cadernos regulares (ex: Azul, Amarelo, Branco, Rosa, Cinza) que contêm **as mesmas questões** em ordens distintas. Além disso, a partir de 2010, o INEP realiza uma segunda aplicação (Reaplicação / PPL — Pessoas Privadas de Liberdade) com **questões inéditas**.
