@@ -15,6 +15,7 @@ if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
 from src.pipeline import run_enem_pipeline, consolidate_all_years
+from src.organize import organize_all_years, organize_year
 
 def parse_years(year_arg: str, all_flag: bool = False) -> list[int]:
     """
@@ -51,6 +52,11 @@ def main():
         help="Executar para todas as edições suportadas (2009 a 2024) e consolidar os dados"
     )
     parser.add_argument(
+        "--organize",
+        action="store_true",
+        help="Organiza pastas descompactadas, desaninha diretórios e padroniza nomes de arquivos em raw/"
+    )
+    parser.add_argument(
         "--base-dir",
         type=str,
         default=None,
@@ -67,6 +73,14 @@ def main():
 
     base_path = Path(args.base_dir) if args.base_dir else current_dir
     output_path = Path(args.output_dir) if args.output_dir else None
+
+    if args.organize:
+        print(f"\n========================================================")
+        print(f" MODO DE ORGANIZAÇÃO — Normalização dos dados brutos em raw/")
+        print(f"========================================================\n")
+        organize_all_years(base_path)
+        print(f"\n[OK] Organização concluída com sucesso.")
+        return
 
     years_to_process = parse_years(args.year, all_flag=args.all)
     print(f"\n========================================================")

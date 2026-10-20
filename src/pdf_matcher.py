@@ -1,5 +1,6 @@
 """
-Módulo para mapeamento determinístico dos arquivos PDF de prova utilizando o catálogo oficial.
+Módulo para mapeamento determinístico dos arquivos PDF de prova utilizando
+identificação dinâmica de conteúdo (Fingerprinting) e o catálogo oficial como fallback.
 Aplica a regra de escopo: seleciona exatamente 1 cor de prova regular (P1) e 1 cor de prova
 de reaplicação/PPL (P2) por edição de Matemática.
 """
@@ -10,31 +11,40 @@ import pandas as pd
 
 from src.catalog import get_pdf_filename, normalize_color
 from src.config import PREFERRED_COLORS, get_day_for_area
+from src.pdf_fingerprint import scan_provas_directory
+
 
 def find_pdf_in_dir(provas_dir: Path, target_filename: str) -> Optional[Path]:
     """
     Localiza o arquivo PDF no diretório de provas de forma insensível a maiúsculas/minúsculas,
     pesquisando inicialmente no diretório raiz e recursivamente em subpastas caso necessário.
+    Suporta variações de extensão como .pdf e .pdf.pdf (comum no acervo oficial de 2015).
     """
     target_lower = target_filename.lower()
+    variants = {target_lower}
+    if target_lower.endswith('.pdf.pdf'):
+        variants.add(target_lower[:-4])
+    elif target_lower.endswith('.pdf'):
+        variants.add(target_lower + '.pdf')
 
     # 1. Busca direta no diretório de provas
     for file_path in provas_dir.glob("*.pdf"):
-        if file_path.name.lower() == target_lower:
+        if file_path.name.lower() in variants:
             return file_path
     for file_path in provas_dir.glob("*.PDF"):
-        if file_path.name.lower() == target_lower:
+        if file_path.name.lower() in variants:
             return file_path
 
     # 2. Busca recursiva (útil para anos como 2017 com subpastas P1/02_Domingo...)
     for file_path in provas_dir.rglob("*.pdf"):
-        if file_path.name.lower() == target_lower:
+        if file_path.name.lower() in variants:
             return file_path
     for file_path in provas_dir.rglob("*.PDF"):
-        if file_path.name.lower() == target_lower:
+        if file_path.name.lower() in variants:
             return file_path
 
     return None
+
 
 def build_math_exam_pdf_mapping(
     provas_dir: Path,
@@ -50,6 +60,7 @@ def build_math_exam_pdf_mapping(
     detailed_map = build_selected_math_exams(provas_dir, df_dict_math, year)
     return {co_prova: info['pdf_path'] for co_prova, info in detailed_map.items()}
 
+
 def build_selected_math_exams(
     provas_dir: Path,
     df_dict_math: pd.DataFrame,
@@ -57,8 +68,10 @@ def build_selected_math_exams(
 ) -> Dict[int, Dict[str, Any]]:
     """
     Executa a seleção unária determinística de cadernos de prova para Matemática (Dia 2):
-    1. Seleciona 1 cor de Primeira Aplicação Regular (P1).
-    2. Seleciona 1 cor de Reaplicação / PPL (P2) se disponível no dicionário e no acervo.
+    1. Inspeciona o conteúdo dos PDFs em provas_dir (Fingerprinting da folha de rosto).
+    2. Seleciona 1 cor de Primeira Aplicação Regular (P1).
+    3. Seleciona 1 cor de Reaplicação / PPL (P2) se disponível no dicionário e no acervo.
+    4. Utiliza o catálogo estático oficial como fallback de segurança.
 
     Retorna um dicionário:
     {
@@ -77,6 +90,13 @@ def build_selected_math_exams(
     selected: Dict[int, Dict[str, Any]] = {}
     day = 2  # Matemática ocorre sempre no Dia 2
 
+    # Inspeciona dinamicamente os PDFs da pasta de provas via fingerprinting
+    fingerprinted_exams = scan_provas_directory(provas_dir)
+    fp_map: Dict[Tuple[str, str], List[Path]] = {}
+    for item in fingerprinted_exams:
+        key = (item['app'], item['color'])
+        fp_map.setdefault(key, []).append(item['path'])
+
     # 1. Seleciona 1 Caderno Regular (P1)
     df_p1 = df_dict_math[df_dict_math['TP_APLICACAO'] == 'P1']
     p1_chosen = False
@@ -88,11 +108,27 @@ def build_selected_math_exams(
 
         for _, row in matching_rows.iterrows():
             co_prova = int(row['CO_PROVA'])
-            expected_filename = get_pdf_filename(year, day, color, application='P1')
-            if not expected_filename:
-                continue
+            pdf_path = None
 
-            pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+            # 1a. Tenta via Fingerprinting de conteúdo
+            if ('P1', color) in fp_map and fp_map[('P1', color)]:
+                # Se houver múltiplos, tenta preferir o que bate com o nome de catálogo
+                expected_filename = get_pdf_filename(year, day, color, application='P1')
+                candidates = fp_map[('P1', color)]
+                if expected_filename:
+                    match_cand = [p for p in candidates if p.name.lower() == expected_filename.lower()]
+                    pdf_path = match_cand[0] if match_cand else candidates[0]
+                else:
+                    pdf_path = candidates[0]
+
+            # 1b. Fallback via Catálogo estático e busca por nome de arquivo
+            if not pdf_path:
+                expected_filename = get_pdf_filename(year, day, color, application='P1')
+                if expected_filename:
+                    found = find_pdf_in_dir(provas_dir, expected_filename)
+                    if found and found.exists():
+                        pdf_path = found
+
             if pdf_path and pdf_path.exists():
                 selected[co_prova] = {
                     'pdf_path': pdf_path,
@@ -112,10 +148,17 @@ def build_selected_math_exams(
         for _, row in df_p1.iterrows():
             co_prova = int(row['CO_PROVA'])
             color = str(row['TX_COR']).strip()
-            expected_filename = get_pdf_filename(year, day, color, application='P1')
-            if not expected_filename:
-                continue
-            pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+            pdf_path = None
+
+            if ('P1', color) in fp_map and fp_map[('P1', color)]:
+                pdf_path = fp_map[('P1', color)][0]
+            else:
+                expected_filename = get_pdf_filename(year, day, color, application='P1')
+                if expected_filename:
+                    found = find_pdf_in_dir(provas_dir, expected_filename)
+                    if found and found.exists():
+                        pdf_path = found
+
             if pdf_path and pdf_path.exists():
                 selected[co_prova] = {
                     'pdf_path': pdf_path,
@@ -137,11 +180,26 @@ def build_selected_math_exams(
 
         for _, row in matching_rows.iterrows():
             co_prova = int(row['CO_PROVA'])
-            expected_filename = get_pdf_filename(year, day, color, application='P2')
-            if not expected_filename:
-                continue
+            pdf_path = None
 
-            pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+            # 2a. Tenta via Fingerprinting de conteúdo
+            if ('P2', color) in fp_map and fp_map[('P2', color)]:
+                expected_filename = get_pdf_filename(year, day, color, application='P2')
+                candidates = fp_map[('P2', color)]
+                if expected_filename:
+                    match_cand = [p for p in candidates if p.name.lower() == expected_filename.lower()]
+                    pdf_path = match_cand[0] if match_cand else candidates[0]
+                else:
+                    pdf_path = candidates[0]
+
+            # 2b. Fallback via Catálogo estático
+            if not pdf_path:
+                expected_filename = get_pdf_filename(year, day, color, application='P2')
+                if expected_filename:
+                    found = find_pdf_in_dir(provas_dir, expected_filename)
+                    if found and found.exists():
+                        pdf_path = found
+
             if pdf_path and pdf_path.exists():
                 selected[co_prova] = {
                     'pdf_path': pdf_path,
@@ -161,10 +219,17 @@ def build_selected_math_exams(
         for _, row in df_p2.iterrows():
             co_prova = int(row['CO_PROVA'])
             color = str(row['TX_COR']).strip()
-            expected_filename = get_pdf_filename(year, day, color, application='P2')
-            if not expected_filename:
-                continue
-            pdf_path = find_pdf_in_dir(provas_dir, expected_filename)
+            pdf_path = None
+
+            if ('P2', color) in fp_map and fp_map[('P2', color)]:
+                pdf_path = fp_map[('P2', color)][0]
+            else:
+                expected_filename = get_pdf_filename(year, day, color, application='P2')
+                if expected_filename:
+                    found = find_pdf_in_dir(provas_dir, expected_filename)
+                    if found and found.exists():
+                        pdf_path = found
+
             if pdf_path and pdf_path.exists():
                 selected[co_prova] = {
                     'pdf_path': pdf_path,
@@ -176,6 +241,7 @@ def build_selected_math_exams(
                 break
 
     return selected
+
 
 def build_exam_pdf_mapping(provas_dir: Path, df_itens: pd.DataFrame, year: int) -> Dict[int, Path]:
     """

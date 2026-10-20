@@ -20,6 +20,7 @@ from src.config import (
 from src.dictionary_parser import parse_math_exam_codes
 from src.pdf_matcher import build_selected_math_exams
 from src.pdf_extractor import extract_questions_from_pdf
+from src.organize import organize_year
 
 def enforce_column_types(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -41,10 +42,14 @@ def locate_year_paths(root_dir: Path, year: int) -> Tuple[Path, Path, Path]:
     """
     Localiza o arquivo CSV de itens, a pasta de provas em PDF e a planilha do dicionário (.xlsx)
     para o ano informado, suportando pastas aninhadas e variações de maiúsculas/minúsculas.
+    Executa a rotina de organização/achatamento automático se necessário.
     """
     year_dir = root_dir / "raw" / f"microdados_enem_{year}"
     if not year_dir.exists():
         raise FileNotFoundError(f"Diretório do ano {year} não encontrado em: {year_dir}")
+
+    # Organiza e desaninha previamente de forma automática
+    organize_year(year_dir, year)
 
     nested = year_dir / f"microdados_enem_{year}"
     search_dir = nested if nested.is_dir() else year_dir

@@ -1,125 +1,188 @@
-# Pipeline de Extração e Enriquecimento de Itens do ENEM (Matemática - MT)
+# Base Enriquecida de Itens do ENEM (Matemática — 2009 a 2024)
 
-Pipeline em Python para correlacionar os dados tabulares estruturados de `ITENS_PROVA_{ANO}.csv` com os cadernos de prova em formato PDF, focada na área de **Matemática (`SG_AREA = 'MT'`)**.
+Pipeline de dados automatizada para unir os microdados tabulares psicométricos oficiais do INEP com o conteúdo textual e gráfico dos cadernos de prova em formato PDF, com foco na área de **Matemática e suas Tecnologias (`SG_AREA = 'MT'`)**.
 
----
-
-## 🎯 Proposta de Escopo
-
-O objetivo do projeto é construir uma base consolidada e enriquecida de questões de Matemática do ENEM (2009 a 2024), **maximizando a diversidade de itens e eliminando redundâncias**:
-
-1. **1 Cor da Prova Regular**: Seleção determinística de apenas 1 cor de caderno da Primeira Aplicação Regular (P1), sem adaptações (45 questões únicas).
-2. **1 Cor da Prova de Reaplicação / PPL**: Nos anos em que houver aplicação de Reaplicação ou PPL (P2), seleção de 1 cor de caderno regular dessa aplicação, sem adaptações (45 questões inéditas).
-3. **Exclusão Estrita de Provas Adaptadas e Provas Digitais**: Cadernos adaptados (Ledor, Braile, Libras, Ampliada, Superampliada, Leitor de Tela, Dosvox, NVDA) e aplicação Digital continuam excluídos.
-
-### Comparativo de Escopo:
-| Característica | Modelo Anterior (Multicores Regular) | Novo Modelo (1 Regular + 1 PPL) |
-| :--- | :--- | :--- |
-| **Cadernos Regulares (P1)** | 4 cores processadas (Azul, Amarelo, Cinza, Rosa) | **1 cor representativa** (ex: Amarelo ou Azul) |
-| **Cadernos PPL / Reaplicação (P2)** | Excluídos | **1 cor representativa** (quando houver) |
-| **Volume por Edição** | 180 linhas (45 questões repetidas 4x) | **45 a 90 questões únicas** (sem redundância de cor) |
-| **Diversidade de Questões** | Apenas itens da 1ª aplicação | **Itens da 1ª aplicação + itens inéditos de PPL/Reaplicação** |
+O resultado final é uma base consolidada com **1.395 itens calibrados pela TRI (Teoria de Resposta ao Item)**, contendo enunciados limpos, alternativas separadas (A a E), parâmetros psicométricos oficiais e indicador de presença de figuras/gráficos.
 
 ---
 
-## 📌 Estrutura do Projeto
+## 🎯 Metodologia e Escopo
+
+Cada edição do ENEM aplica 4 cores de cadernos regulares (ex: Azul, Amarelo, Branco, Rosa, Cinza) que contêm **as mesmas 45 questões** em ordens distintas. Além disso, a partir de 2010, o INEP realiza uma segunda aplicação (Reaplicação / PPL — Pessoas Privadas de Liberdade) com **45 questões inéditas**.
+
+Para maximizar a diversidade de itens e eliminar redundâncias, este projeto adota uma **amostragem unária representativa por aplicação**:
+
+1. **1 Cor da Prova Regular (1ª Aplicação — P1)**: 45 questões únicas por edição.
+2. **1 Cor da Prova de Reaplicação / PPL (2ª Aplicação — P2)**: 45 questões inéditas por edição (de 2010 a 2024).
+3. **Exclusão Estrita de Provas Adaptadas e Digitais**: São excluídos cadernos adaptados (Ledor, Braile, Libras, Ampliada, Superampliada, Leitor de Tela) e aplicações exclusivamente digitais (2020 a 2022).
+
+### Volume Consolidado
+- **2009**: 45 itens (apenas aplicação regular).
+- **2010 a 2024 (15 edições)**: 90 itens por ano (45 Regular + 45 PPL).
+- **Total na base consolidada**: **1.395 itens únicos**.
+
+---
+
+## 📂 Estrutura do Repositório
 
 ```text
 microdados-enem-item-enriquecido/
 │
-├── .venv/                         # Ambiente virtual Python
-├── raw/                           # Dados brutos dos microdados (INEP 2009 a 2024)
-│   ├── microdados_enem_2024/
-│   │   ├── DADOS/ITENS_PROVA_2024.csv
-│   │   ├── DICIONÁRIO/Dicionário_Microdados_Enem_2024.xlsx
+├── raw/                                  # Dados brutos dos microdados (descompactados)
+│   ├── microdados_enem_2009/
+│   │   ├── DADOS/ITENS_PROVA_2009.csv
+│   │   ├── DICIONÁRIO/...
 │   │   └── PROVAS E GABARITOS/*.pdf
 │   └── ...
 │
+├── processed/                            # Datasets finais enriquecidos
+│   ├── itens_prova_{ANO}_enriquecido.csv      # Bases anuais individuais
+│   └── itens_prova_2009_2024_enriquecido.csv  # Base consolidada multi-ano (1.395 itens)
+│
 ├── src/
 │   ├── __init__.py
-│   ├── config.py                  # Constantes (MT, Dia 2), filtros de adaptação e regexes
-│   ├── catalog.py                 # Catálogo estático de PDFs regulares e PPL (Ano, Aplicação, Cor) ➔ PDF
-│   ├── dictionary_parser.py       # Leitor do Dicionário para identificação de provas P1 e P2
-│   ├── pdf_matcher.py             # Seleção determinística de 1 cor regular e 1 cor PPL
-│   ├── pdf_extractor.py           # Extração PyMuPDF de enunciados, alternativas A-E e imagens
-│   └── pipeline.py                # Orquestrador da execução e geração do dataset final
+│   ├── config.py                         # Constantes (MT, Dia 2), cores e filtros de adaptação
+│   ├── catalog.py                        # Catálogo canônico de referência de PDFs oficiais
+│   ├── pdf_fingerprint.py                # Leitor inteligente de folha de rosto (PyMuPDF)
+│   ├── pdf_matcher.py                    # Seleção unária e casamento dinâmico (P1 e P2)
+│   ├── organize.py                       # Desaninhamento e padronização automática de arquivos
+│   ├── pdf_extractor.py                  # Extração textual, alternativas A-E e imagens
+│   ├── pipeline.py                       # Orquestrador da pipeline de ponta a ponta
+│   └── dictionary_parser.py              # Leitor dinâmico do dicionário de dados em Excel
 │
-├── processed/
-│   ├── itens_prova_{ANO}_enriquecido.csv      # Base final enriquecida anual (2009 a 2024)
-│   └── itens_prova_2009_2024_enriquecido.csv  # Base consolidada multi-ano com todas as edições
-│
-├── provas_enem_2009_2024.txt      # Catálogo bruto de PDFs de provas e gabaritos
-├── requirements.txt               # Dependências do projeto (pandas, openpyxl, pymupdf)
-├── main.py                        # Ponto de entrada CLI
-├── AGENTS.md                      # Diretrizes arquiteturais e regras para agentes de IA
-└── README.md                      # Documentação geral do projeto
+├── main.py                               # Ponto de entrada CLI
+├── requirements.txt                      # Dependências Python (pandas, openpyxl, pymupdf)
+├── AGENTS.md                             # Contexto arquitetural e regras para agentes de IA
+└── README.md                             # Este guia
 ```
 
 ---
 
-## 🚀 Como Executar
+## 🛠️ Como Reproduzir a Base
 
-### 1. Ativar o Ambiente Virtual
-No Linux / WSL:
+### 1. Preparar o Ambiente
+
+Clone o repositório e ative um ambiente virtual Python (3.10 a 3.12 recomendado):
+
 ```bash
+git clone https://github.com/SEU_USUARIO/microdados-enem-item-enriquecido.git
+cd microdados-enem-item-enriquecido
+
+python -m venv .venv
+
+# Linux / WSL / macOS:
 source .venv/bin/activate
-```
 
-No Windows PowerShell:
-```powershell
+# Windows (PowerShell):
 .\.venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
 ```
 
-### 2. Executar a Pipeline
+---
+
+### 2. Obter os Dados Brutos do INEP
+
+Baixe os pacotes compactados de microdados das edições desejadas (ou de todas de 2009 a 2024) no portal oficial de Dados Abertos do INEP:
+- **Página de Microdados do INEP**: [gov.br/inep - Microdados do Enem](https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/enem)
+
+Descompacte cada arquivo `.zip` dentro da pasta `raw/`, seguindo o padrão `raw/microdados_enem_{ANO}`:
+```text
+raw/
+├── microdados_enem_2009/
+├── microdados_enem_2010/
+...
+└── microdados_enem_2024/
+```
+
+> **Nota sobre pastas aninhadas:** Caso a descompactação gere pastas repetidas (como `microdados_enem_2023/microdados_enem_2023/`), o sistema desaninhará e organizará tudo de forma automática.
+
+---
+
+### 3. Cadernos Complementares de Reaplicação / PPL (2012, 2013 e 2014)
+
+Nos pacotes de microdados oficiais de **2012, 2013 e 2014**, o INEP incluiu na pasta `PROVAS E GABARITOS` apenas os cadernos da 1ª aplicação regular, omitindo os cadernos da 2ª aplicação (PPL), embora os dados psicométricos dos itens estejam presentes no CSV `ITENS_PROVA_{ANO}.csv`.
+
+Caso deseje incluir as 45 questões de PPL desses 3 anos para compor o banco completo de 1.395 itens:
+
+1. Acesse o repositório oficial de provas anteriores:
+   - [Portal Gov.br - INEP: Provas e Gabaritos do Enem](https://www.gov.br/inep/pt-br/areas-de-atuacao/avaliacao-e-exames-educacionais/enem/provas-e-gabaritos)
+2. Selecione a seção **Reaplicação / PPL** e baixe o caderno do **2º Dia (Cinza)**:
+   - **2012**: 2º Dia — Caderno 6 (Cinza) — Reaplicação / PPL
+   - **2013**: 2º Dia — Caderno 6 (Cinza) — Reaplicação / PPL
+   - **2014**: 2º Dia — Caderno 6 (Cinza) — Reaplicação / PPL
+3. Salve cada PDF dentro da pasta correspondente:
+   - `raw/microdados_enem_2012/PROVAS E GABARITOS/`
+   - `raw/microdados_enem_2013/PROVAS e GABARITOS/`
+   - `raw/microdados_enem_2014/PROVAS e GABARITOS/`
+
+> **Mapeamento e Renomeação 100% Automáticos:** Você pode salvar esses arquivos com **qualquer nome** (ex: `caderno_ppl.pdf` ou o nome original do download). O módulo `src/pdf_fingerprint.py` inspeciona a folha de rosto do documento via PyMuPDF, detecta a indicação `"2ª APLICAÇÃO"`, identifica o dia e a cor, e realiza o casamento exato com o código de prova do INEP, sem necessidade de renomeação manual.
+
+---
+
+### 4. Executar a Pipeline
+
+Você pode executar para uma única edição ou para todo o histórico:
+
 ```bash
-# Execução padrão (ano 2024)
+# Opcional: normaliza pastas aninhadas, extensões e nomes em raw/
+python main.py --organize
+
+# Executar apenas uma edição específica (ex: 2024)
 python main.py --year 2024
 
-# Executar para outro ano (ex: 2023, 2022 ou 2017)
-python main.py --year 2023
+# Executar um intervalo de edições (ex: 2020 a 2024)
+python main.py --year 2020-2024
 
-# Executar todas as edições (2009 a 2024) e gerar a base consolidada automaticamente
+# Executar todas as 16 edições (2009 a 2024) e consolidar os dados automaticamente
 python main.py -all
 ```
 
 ---
 
-## 📊 Especificação das Colunas de Saída
+## 📊 Especificação das Colunas do Dataset
 
-Os arquivos exportados em `processed/` (tanto os anuais quanto o consolidado `itens_prova_2009_2024_enriquecido.csv`) preservam as colunas do INEP e adicionam os campos enriquecidos:
+O dataset gerado em `processed/` (tanto os anuais quanto o consolidado `itens_prova_2009_2024_enriquecido.csv`) utiliza codificação `utf-8-sig` (UTF-8 com BOM) e delimitador `;`.
 
-| Coluna | Tipo | Origem | Descrição |
-| :--- | :--- | :--- | :--- |
-| `ANO_APLICACAO` | `int` | Enriquecido | Ano da edição da prova (2009 a 2024) |
-| `CO_POSICAO` | `int` | INEP | Posição da questão no caderno (1 a 45 ou 136 a 180) |
-| `SG_AREA` | `str` | INEP | Sigla da área de conhecimento (`MT` para Matemática) |
-| `CO_ITEM` | `int` | INEP | Código identificador universal do item no banco do INEP |
-| `TX_GABARITO` | `str` | INEP | Alternativa correta (`A`, `B`, `C`, `D`, `E` ou `*` se anulada) |
-| `CO_HABILIDADE` | `int` | INEP | Código da habilidade da Matriz de Referência do ENEM |
-| `NU_PARAM_A/B/C`| `float`| INEP | Parâmetros psicométricos da TRI (discriminação, dificuldade, acerto ao acaso) |
-| `CO_PROVA` | `int` | INEP | Código numérico da prova no INEP |
-| `TX_COR` | `str` | INEP | Cor do caderno selecionado |
-| `TP_APLICACAO` | `str` | Enriquecido | Categoria da prova (`REGULAR` para 1ª aplicação ou `REAPLICACAO_PPL` para 2ª aplicação) |
-| `REF_ARQUIVO_PDF` | `str` | Enriquecido | Nome do PDF físico de onde o item foi extraído (identifica P1 vs P2) |
-| `DESC_ENUNCIADO` | `str` | Enriquecido | Texto integral limpo do enunciado da questão |
-| `DESC_ALTER_A` | `str` | Enriquecido | Texto da alternativa A |
-| `DESC_ALTER_B` | `str` | Enriquecido | Texto da alternativa B |
-| `DESC_ALTER_C` | `str` | Enriquecido | Texto da alternativa C |
-| `DESC_ALTER_D` | `str` | Enriquecido | Texto da alternativa D |
-| `DESC_ALTER_E` | `str` | Enriquecido | Texto da alternativa E |
-| `IN_ITEM_IMAGEM` | `int` | Enriquecido | `1` se há imagem/gráfico no enunciado ou nas alternativas; `0` caso contrário |
+### Colunas Oficiais Preservadas do INEP:
+| Coluna | Tipo | Descrição |
+| :--- | :--- | :--- |
+| `CO_POSICAO` | `int` | Posição física da questão no caderno (1 a 45 ou 136 a 180). |
+| `SG_AREA` | `str` | Área do conhecimento (`MT` para Matemática). |
+| `CO_ITEM` | `int` | Código identificador universal único do item no banco do INEP. |
+| `TX_GABARITO` | `str` | Alternativa correta oficial (`A`, `B`, `C`, `D`, `E` ou `*` se questão anulada). |
+| `CO_HABILIDADE`| `int` | Código da habilidade avaliada (Matriz de Referência de Matemática do ENEM). |
+| `IN_ITEM_ABAN` | `int` | Indicador de item abandonado no pré-teste / calibração. |
+| `TX_MOTIVO_ABAN`| `str` | Justificativa do abandono do item, quando aplicável. |
+| `NU_PARAM_A` | `float`| **Parâmetro $a$ da TRI**: Discriminação do item (capacidade de diferenciar participantes com proficiências distintas). |
+| `NU_PARAM_B` | `float`| **Parâmetro $b$ da TRI**: Dificuldade do item (ponto na escala de proficiência onde a probabilidade de acerto é mediana). |
+| `NU_PARAM_C` | `float`| **Parâmetro $c$ da TRI**: Acerto casual / adivinhação (probabilidade de acerto por participante com proficiência infinitamente baixa). |
+| `TX_COR` | `str` | Cor do caderno selecionado (ex: `AMARELO`, `AZUL`, `CINZA`). |
+| `CO_PROVA` | `int` | Código numérico da prova no sistema do INEP. |
+| `TP_LINGUA` | `float`| Indicador de língua estrangeira (quando aplicável no dia). |
+| `IN_ITEM_ADAPTADO`| `int` | Indicador de adaptação especial (sempre `0` ou `NaN` neste escopo). |
 
-> **Nota sobre Alternativas Gráficas:** Alternativas cujo conteúdo é estritamente uma figura geométrica, diagrama ou gráfico recebem o valor `[Figura / Imagem]`.
+### Colunas Enriquecidas Geradas:
+| Coluna | Tipo | Descrição |
+| :--- | :--- | :--- |
+| `ANO_APLICACAO` | `int` | Ano da edição do ENEM (2009 a 2024). |
+| `TP_APLICACAO` | `str` | Classificação da aplicação: `REGULAR` (1ª aplicação) ou `REAPLICACAO_PPL` (2ª aplicação). |
+| `REF_ARQUIVO_PDF` | `str` | Nome exato do arquivo PDF de onde o item foi extraído. |
+| `DESC_ENUNCIADO`| `str` | Texto integral limpo e sanitizado do enunciado da questão. |
+| `DESC_ALTER_A` | `str` | Texto integral da alternativa A. |
+| `DESC_ALTER_B` | `str` | Texto integral da alternativa B. |
+| `DESC_ALTER_C` | `str` | Texto integral da alternativa C. |
+| `DESC_ALTER_D` | `str` | Texto integral da alternativa D. |
+| `DESC_ALTER_E` | `str` | Texto integral da alternativa E. |
+| `IN_ITEM_IMAGEM`| `int` | Indicador binário: `1` se há imagem, figura geométrica ou gráfico no item; `0` se é puramente textual. |
+
+> **Nota sobre Alternativas Gráficas:** Alternativas cujo conteúdo é estritamente visual (figura geométrica, gráfico ou diagrama sem texto legível) recebem a marcação padronizada `[Figura / Imagem]`.
 
 ---
 
-## 📈 Cobertura Histórica de Provas (Matemática - Dia 2)
+## 🔬 Rigor e Detalhes de Implementação
 
-- **Edições com Reaplicação / PPL disponível (2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017, 2016, 2015, 2011, 2010)**:
-  - 1 cor da Prova Regular (P1): 45 questões.
-  - 1 cor da Prova PPL / Reaplicação (P2): 45 questões.
-  - **Total**: 90 questões distintas por edição.
-- **Edições sem Reaplicação / PPL no acervo oficial (2014, 2013, 2012, 2009)**:
-  - 1 cor da Prova Regular (P1): 45 questões.
-  - **Total**: 45 questões por edição.
-- **Formato de Saída**: CSV UTF-8 com BOM (`utf-8-sig`) e delimitador `;`, garantindo abertura direta no Excel e compatibilidade com ferramentas de ciência de dados.
+- **Inspeção de Layout de Duas Colunas**: A mancha gráfica dos cadernos de prova é dividida verticalmente pelo meio da página (`mid_x = page.rect.width / 2.0`), garantindo a ordem natural de leitura das questões.
+- **Detecção Espacial de Imagens**: Identifica elementos visuais tanto via fluxos de imagem raster (*bitmaps*) quanto via vetores gráficos renderizados diretamente na página.
+- **Reparo de CMaps de Fontes**: Para edições antigas cujos PDFs não incluíam tabelas `ToUnicode`, a pipeline reconstrói dinamicamente CMaps para símbolos matemáticos e fontes Type1.
+- **Reconciliação de Omissões Oficiais**: Corrige omissões documentadas nas planilhas de dicionário do INEP (como a prova PPL código 136 de 2011, código 156 de 2012 e código 186 de 2013).
