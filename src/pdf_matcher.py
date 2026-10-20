@@ -2,7 +2,7 @@
 Módulo para mapeamento determinístico dos arquivos PDF de prova utilizando
 identificação dinâmica de conteúdo (Fingerprinting) e o catálogo oficial como fallback.
 Aplica a regra de escopo: seleciona exatamente 1 cor de prova regular (P1) e 1 cor de prova
-de reaplicação/PPL (P2) por edição de Matemática.
+de reaplicação/PPL (P2) por edição para a área informada (MT, CN, CH ou LC).
 """
 
 from pathlib import Path
@@ -46,32 +46,19 @@ def find_pdf_in_dir(provas_dir: Path, target_filename: str) -> Optional[Path]:
     return None
 
 
-def build_math_exam_pdf_mapping(
+def build_selected_exams(
     provas_dir: Path,
-    df_dict_math: pd.DataFrame,
-    year: int
-) -> Dict[int, Path]:
-    """
-    Seleciona deterministicamente exatamente 1 cor de caderno regular (P1)
-    e 1 cor de caderno de reaplicação/PPL (P2) para a área de Matemática (Dia 2).
-
-    Retorna um dicionário mapeando CO_PROVA -> Path_do_PDF_Fisico.
-    """
-    detailed_map = build_selected_math_exams(provas_dir, df_dict_math, year)
-    return {co_prova: info['pdf_path'] for co_prova, info in detailed_map.items()}
-
-
-def build_selected_math_exams(
-    provas_dir: Path,
-    df_dict_math: pd.DataFrame,
-    year: int
+    df_dict: pd.DataFrame,
+    year: int,
+    area: str = 'MT'
 ) -> Dict[int, Dict[str, Any]]:
     """
-    Executa a seleção unária determinística de cadernos de prova para Matemática (Dia 2):
-    1. Inspeciona o conteúdo dos PDFs em provas_dir (Fingerprinting da folha de rosto).
-    2. Seleciona 1 cor de Primeira Aplicação Regular (P1).
-    3. Seleciona 1 cor de Reaplicação / PPL (P2) se disponível no dicionário e no acervo.
-    4. Utiliza o catálogo estático oficial como fallback de segurança.
+    Executa a seleção unária determinística de cadernos de prova para uma área específica (MT, CN, CH ou LC):
+    1. Determina o dia da prova correspondente à área e ano via get_day_for_area.
+    2. Inspeciona o conteúdo dos PDFs em provas_dir (Fingerprinting da folha de rosto).
+    3. Seleciona 1 cor de Primeira Aplicação Regular (P1).
+    4. Seleciona 1 cor de Reaplicação / PPL (P2) se disponível no dicionário e no acervo.
+    5. Utiliza o catálogo estático oficial como fallback de segurança.
 
     Retorna um dicionário:
     {
@@ -80,25 +67,28 @@ def build_selected_math_exams(
             'tp_aplicacao': 'REGULAR' ou 'REAPLICACAO_PPL',
             'app_key': 'P1' ou 'P2',
             'tx_cor': str,
-            'desc_original': str
+            'desc_original': str,
+            'day': int,
+            'area': str
         }
     }
     """
     if not provas_dir.exists():
         raise FileNotFoundError(f"Diretório de provas não encontrado em: {provas_dir}")
 
+    area_upper = area.upper().strip()
+    day = get_day_for_area(area_upper, year)
     selected: Dict[int, Dict[str, Any]] = {}
-    day = 2  # Matemática ocorre sempre no Dia 2
 
     # Inspeciona dinamicamente os PDFs da pasta de provas via fingerprinting
     fingerprinted_exams = scan_provas_directory(provas_dir)
-    fp_map: Dict[Tuple[str, str], List[Path]] = {}
+    fp_map: Dict[Tuple[int, str, str], List[Path]] = {}
     for item in fingerprinted_exams:
-        key = (item['app'], item['color'])
+        key = (item['day'], item['app'], item['color'])
         fp_map.setdefault(key, []).append(item['path'])
 
     # 1. Seleciona 1 Caderno Regular (P1)
-    df_p1 = df_dict_math[df_dict_math['TP_APLICACAO'] == 'P1']
+    df_p1 = df_dict[df_dict['TP_APLICACAO'] == 'P1']
     p1_chosen = False
 
     for color in PREFERRED_COLORS:
@@ -110,11 +100,11 @@ def build_selected_math_exams(
             co_prova = int(row['CO_PROVA'])
             pdf_path = None
 
-            # 1a. Tenta via Fingerprinting de conteúdo
-            if ('P1', color) in fp_map and fp_map[('P1', color)]:
-                # Se houver múltiplos, tenta preferir o que bate com o nome de catálogo
+            # 1a. Tenta via Fingerprinting de conteúdo (filtrando pelo dia exato)
+            fp_key = (day, 'P1', color)
+            if fp_key in fp_map and fp_map[fp_key]:
                 expected_filename = get_pdf_filename(year, day, color, application='P1')
-                candidates = fp_map[('P1', color)]
+                candidates = fp_map[fp_key]
                 if expected_filename:
                     match_cand = [p for p in candidates if p.name.lower() == expected_filename.lower()]
                     pdf_path = match_cand[0] if match_cand else candidates[0]
@@ -135,7 +125,9 @@ def build_selected_math_exams(
                     'tp_aplicacao': 'REGULAR',
                     'app_key': 'P1',
                     'tx_cor': color,
-                    'desc_original': row.get('DESC_ORIGINAL', '')
+                    'desc_original': row.get('DESC_ORIGINAL', ''),
+                    'day': day,
+                    'area': area_upper
                 }
                 p1_chosen = True
                 break
@@ -150,8 +142,9 @@ def build_selected_math_exams(
             color = str(row['TX_COR']).strip()
             pdf_path = None
 
-            if ('P1', color) in fp_map and fp_map[('P1', color)]:
-                pdf_path = fp_map[('P1', color)][0]
+            fp_key = (day, 'P1', color)
+            if fp_key in fp_map and fp_map[fp_key]:
+                pdf_path = fp_map[fp_key][0]
             else:
                 expected_filename = get_pdf_filename(year, day, color, application='P1')
                 if expected_filename:
@@ -165,12 +158,14 @@ def build_selected_math_exams(
                     'tp_aplicacao': 'REGULAR',
                     'app_key': 'P1',
                     'tx_cor': color,
-                    'desc_original': row.get('DESC_ORIGINAL', '')
+                    'desc_original': row.get('DESC_ORIGINAL', ''),
+                    'day': day,
+                    'area': area_upper
                 }
                 break
 
     # 2. Seleciona 1 Caderno de Reaplicação / PPL (P2)
-    df_p2 = df_dict_math[df_dict_math['TP_APLICACAO'] == 'P2']
+    df_p2 = df_dict[df_dict['TP_APLICACAO'] == 'P2']
     p2_chosen = False
 
     for color in PREFERRED_COLORS:
@@ -183,9 +178,10 @@ def build_selected_math_exams(
             pdf_path = None
 
             # 2a. Tenta via Fingerprinting de conteúdo
-            if ('P2', color) in fp_map and fp_map[('P2', color)]:
+            fp_key = (day, 'P2', color)
+            if fp_key in fp_map and fp_map[fp_key]:
                 expected_filename = get_pdf_filename(year, day, color, application='P2')
-                candidates = fp_map[('P2', color)]
+                candidates = fp_map[fp_key]
                 if expected_filename:
                     match_cand = [p for p in candidates if p.name.lower() == expected_filename.lower()]
                     pdf_path = match_cand[0] if match_cand else candidates[0]
@@ -206,7 +202,9 @@ def build_selected_math_exams(
                     'tp_aplicacao': 'REAPLICACAO_PPL',
                     'app_key': 'P2',
                     'tx_cor': color,
-                    'desc_original': row.get('DESC_ORIGINAL', '')
+                    'desc_original': row.get('DESC_ORIGINAL', ''),
+                    'day': day,
+                    'area': area_upper
                 }
                 p2_chosen = True
                 break
@@ -221,8 +219,9 @@ def build_selected_math_exams(
             color = str(row['TX_COR']).strip()
             pdf_path = None
 
-            if ('P2', color) in fp_map and fp_map[('P2', color)]:
-                pdf_path = fp_map[('P2', color)][0]
+            fp_key = (day, 'P2', color)
+            if fp_key in fp_map and fp_map[fp_key]:
+                pdf_path = fp_map[fp_key][0]
             else:
                 expected_filename = get_pdf_filename(year, day, color, application='P2')
                 if expected_filename:
@@ -236,11 +235,36 @@ def build_selected_math_exams(
                     'tp_aplicacao': 'REAPLICACAO_PPL',
                     'app_key': 'P2',
                     'tx_cor': color,
-                    'desc_original': row.get('DESC_ORIGINAL', '')
+                    'desc_original': row.get('DESC_ORIGINAL', ''),
+                    'day': day,
+                    'area': area_upper
                 }
                 break
 
     return selected
+
+
+def build_selected_math_exams(
+    provas_dir: Path,
+    df_dict_math: pd.DataFrame,
+    year: int
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Função de compatibilidade: invoca build_selected_exams para Matemática (MT).
+    """
+    return build_selected_exams(provas_dir, df_dict_math, year, area='MT')
+
+
+def build_math_exam_pdf_mapping(
+    provas_dir: Path,
+    df_dict_math: pd.DataFrame,
+    year: int
+) -> Dict[int, Path]:
+    """
+    Retorna mapeamento CO_PROVA -> Path_do_PDF para Matemática.
+    """
+    detailed_map = build_selected_math_exams(provas_dir, df_dict_math, year)
+    return {co_prova: info['pdf_path'] for co_prova, info in detailed_map.items()}
 
 
 def build_exam_pdf_mapping(provas_dir: Path, df_itens: pd.DataFrame, year: int) -> Dict[int, Path]:

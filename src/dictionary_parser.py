@@ -50,21 +50,22 @@ KNOWN_DICTIONARY_OMISSIONS = {
     }
 }
 
-def parse_math_exam_codes(
+def parse_exam_codes(
     dictionary_path: Path,
+    area: str = 'MT',
     csv_path: Optional[Path] = None
 ) -> pd.DataFrame:
     """
     Percorre dinamicamente todas as abas do dicionário de dados (.xlsx), localizando
-    a célula que contém a variável 'CO_PROVA_MT'. A partir dessa linha, extrai os códigos
+    a célula que contém a variável 'CO_PROVA_{AREA}'. A partir dessa linha, extrai os códigos
     numéricos de prova, descrições e cores, classificando em P1 (Regular) e P2 (Reaplicação / PPL)
     e descartando provas adaptadas e digitais.
 
-    Caso fornecido 'csv_path', reconcilia e incorpora códigos válidos de Matemática presentes
-    no CSV que foram omitidos na planilha oficial do Dicionário (ex: código 136 em 2011).
+    Caso fornecido 'csv_path', reconcilia e incorpora códigos válidos presentes
+    no CSV que foram omitidos na planilha oficial do Dicionário (ex: código 136 em 2011 para MT).
 
     Retorna um DataFrame contendo as colunas:
-    - SG_AREA: 'MT'
+    - SG_AREA: str (ex: 'MT', 'CN', 'CH', 'LC')
     - CO_PROVA: int (código da prova)
     - TX_COR: str (cor padronizada, ex: 'AZUL', 'AMARELO', 'CINZA', 'ROSA', 'VERDE')
     - TP_APLICACAO: str ('P1' para Regular ou 'P2' para Reaplicação/PPL)
@@ -72,6 +73,9 @@ def parse_math_exam_codes(
     """
     if not dictionary_path.exists():
         raise FileNotFoundError(f"Dicionário não encontrado em: {dictionary_path}")
+
+    area_upper = area.upper().strip()
+    target_var = f"CO_PROVA_{area_upper}"
 
     wb = openpyxl.load_workbook(dictionary_path, read_only=True, data_only=True)
     records = []
@@ -82,7 +86,7 @@ def parse_math_exam_codes(
 
         target_row_idx = None
         for r_idx, row in enumerate(rows):
-            if any(cell and 'CO_PROVA_MT' in str(cell).strip().upper() for cell in row):
+            if any(cell and target_var in str(cell).strip().upper() for cell in row):
                 target_row_idx = r_idx
                 break
 
@@ -144,7 +148,7 @@ def parse_math_exam_codes(
 
                 if standard_color is not None:
                     records.append({
-                        'SG_AREA': TARGET_AREA,
+                        'SG_AREA': area_upper,
                         'CO_PROVA': code,
                         'TX_COR': standard_color,
                         'TP_APLICACAO': tp_aplicacao,
@@ -156,37 +160,45 @@ def parse_math_exam_codes(
 
     wb.close()
 
-    # Reconciliação com omissões conhecidas do INEP (ex: 2011, 2012, 2013)
-    found_codes = {r['CO_PROVA'] for r in records}
-    
-    # 1. Checagem direta por ano no nome do dicionário
-    year_omissions = {
-        '2011': 136,
-        '2012': 156,
-        '2013': 186
-    }
-    for yr_str, om_code in year_omissions.items():
-        if yr_str in dictionary_path.name and om_code not in found_codes:
-            records.append(KNOWN_DICTIONARY_OMISSIONS[om_code])
-            found_codes.add(om_code)
+    # Reconciliação com omissões conhecidas do INEP para MT (ex: 2011, 2012, 2013)
+    if area_upper == 'MT':
+        found_codes = {r['CO_PROVA'] for r in records}
+        year_omissions = {
+            '2011': 136,
+            '2012': 156,
+            '2013': 186
+        }
+        for yr_str, om_code in year_omissions.items():
+            if yr_str in dictionary_path.name and om_code not in found_codes:
+                records.append(KNOWN_DICTIONARY_OMISSIONS[om_code])
+                found_codes.add(om_code)
 
-    # 2. Se um CSV de itens foi passado, verifica se há códigos conhecidos adicionais
-    if csv_path and csv_path.exists():
-        try:
-            df_csv = pd.read_csv(csv_path, sep=';', encoding='latin1', nrows=5000)
-            if 'SG_AREA' in df_csv.columns and 'CO_PROVA' in df_csv.columns:
-                mt_csv_codes = set(df_csv[df_csv['SG_AREA'] == TARGET_AREA]['CO_PROVA'].dropna().astype(int).unique())
-                for missing_code in (mt_csv_codes - found_codes):
-                    if missing_code in KNOWN_DICTIONARY_OMISSIONS:
-                        records.append(KNOWN_DICTIONARY_OMISSIONS[missing_code])
-                        found_codes.add(missing_code)
-        except Exception:
-            pass
+        if csv_path and csv_path.exists():
+            try:
+                df_csv = pd.read_csv(csv_path, sep=';', encoding='latin1', nrows=5000)
+                if 'SG_AREA' in df_csv.columns and 'CO_PROVA' in df_csv.columns:
+                    mt_csv_codes = set(df_csv[df_csv['SG_AREA'] == area_upper]['CO_PROVA'].dropna().astype(int).unique())
+                    for missing_code in (mt_csv_codes - found_codes):
+                        if missing_code in KNOWN_DICTIONARY_OMISSIONS:
+                            records.append(KNOWN_DICTIONARY_OMISSIONS[missing_code])
+                            found_codes.add(missing_code)
+            except Exception:
+                pass
 
     if not records:
-        raise RuntimeError(f"Nenhum código de Matemática (CO_PROVA_MT) encontrado em {dictionary_path.name}.")
+        raise RuntimeError(f"Nenhum código para a área {area_upper} ({target_var}) encontrado em {dictionary_path.name}.")
 
     return pd.DataFrame(records)
+
+
+def parse_math_exam_codes(
+    dictionary_path: Path,
+    csv_path: Optional[Path] = None
+) -> pd.DataFrame:
+    """
+    Função de compatibilidade: invoca parse_exam_codes para a área MT.
+    """
+    return parse_exam_codes(dictionary_path, area='MT', csv_path=csv_path)
 
 def parse_dictionary(dictionary_path: Path, year: Optional[int] = None) -> pd.DataFrame:
     """

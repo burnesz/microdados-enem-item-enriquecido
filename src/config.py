@@ -36,7 +36,12 @@ AREA_TO_DAY = {
     'MT': 2
 }
 
-# Área e dia alvo para extração focada em Matemática
+# Áreas do conhecimento avaliadas no ENEM
+ALL_AREAS = ['CN', 'CH', 'LC', 'MT']
+VALID_AREAS = ('CN', 'CH', 'LC', 'MT')
+DEFAULT_AREAS = ALL_AREAS
+
+# Área e dia alvo mantidos como padrão por compatibilidade
 TARGET_AREA = 'MT'
 MATH_EXAM_DAY = 2
 

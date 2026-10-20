@@ -5,11 +5,12 @@ e seleção unária determinística de cadernos (1 cor da Prova Regular + 1 cor 
 """
 
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, Union, List
 import time
 import pandas as pd
 
 from src.config import (
+    ALL_AREAS,
     TARGET_AREA,
     SUPPORTED_YEARS,
     CONSOLIDATED_OUTPUT_FILENAME,
@@ -17,8 +18,8 @@ from src.config import (
     INTEGER_COLUMNS,
     FLOAT_COLUMNS
 )
-from src.dictionary_parser import parse_math_exam_codes
-from src.pdf_matcher import build_selected_math_exams
+from src.dictionary_parser import parse_exam_codes, parse_math_exam_codes
+from src.pdf_matcher import build_selected_exams, build_selected_math_exams
 from src.pdf_extractor import extract_questions_from_pdf
 from src.organize import organize_year
 
@@ -122,23 +123,33 @@ def locate_year_paths(root_dir: Path, year: int) -> Tuple[Path, Path, Path]:
 
 def run_enem_pipeline(
     year: int = 2024,
+    areas: Optional[Union[str, list[str]]] = None,
     base_dir: Optional[Path] = None,
     output_dir: Optional[Path] = None
 ) -> pd.DataFrame:
     """
-    Executa a pipeline de Matemática para o ano especificado:
+    Executa a pipeline de enriquecimento para o ano e áreas informadas:
     1. Localiza CSV de itens, pasta de provas e Dicionário de Dados (.xlsx).
-    2. Lê o Dicionário dinamicamente para classificar códigos de Matemática em Regular (P1) e PPL (P2).
+    2. Lê o Dicionário dinamicamente para classificar códigos das provas em Regular (P1) e PPL (P2).
     3. Seleciona deterministicamente 1 caderno Regular e 1 caderno PPL (quando houver).
-    4. Filtra ITENS_PROVA_{ANO}.csv mantendo apenas os itens dos cadernos selecionados.
-    5. Extrai enunciados, alternativas (A-E) e presença de imagem via PyMuPDF.
+    4. Extrai enunciados, alternativas (A-E) e presença de imagem via PyMuPDF com cache de cadernos.
+    5. Filtra e enriquece os itens das áreas solicitadas (padrão: todas as 4 áreas).
     6. Exporta a base enriquecida em processed/itens_prova_{ANO}_enriquecido.csv.
     """
     start_time = time.time()
     root_dir = base_dir or Path(__file__).resolve().parent.parent
 
+    # Normalização da lista de áreas alvo
+    if areas is None or (isinstance(areas, str) and areas.strip().upper() in ('ALL', '*')):
+        target_areas = list(ALL_AREAS)
+    elif isinstance(areas, str):
+        target_areas = [a.strip().upper() for a in areas.split(',') if a.strip()]
+    else:
+        target_areas = [a.strip().upper() for a in areas]
+
     print(f"\n========================================================")
-    print(f" Iniciando Pipeline ENEM (Matemática - MT) - Ano: {year}")
+    print(f" Iniciando Pipeline ENEM - Ano: {year}")
+    print(f" Áreas selecionadas: {target_areas}")
     print(f" Escopo: 1 Cor Regular (P1) + 1 Cor Reaplicação/PPL (P2)")
     print(f" Diretório base: {root_dir}")
     print(f"========================================================\n")
@@ -150,7 +161,7 @@ def run_enem_pipeline(
     print(f"      - Pasta Provas: {provas_dir}")
 
     # 1. Carrega dados estruturados do CSV de itens
-    print(f"\n[2/4] Carregando itens e selecionando cadernos via Dicionário...")
+    print(f"\n[2/4] Carregando itens de prova...")
     try:
         df_itens_all = pd.read_csv(csv_path, sep=';', encoding='latin1')
     except Exception:
@@ -158,156 +169,169 @@ def run_enem_pipeline(
 
     print(f"      Total de linhas no CSV original: {len(df_itens_all)}")
 
-    # Filtra estritamente para Matemática (MT)
-    df_itens = df_itens_all[df_itens_all['SG_AREA'] == TARGET_AREA].copy()
-    print(f"      Total de linhas de Matemática (SG_AREA == '{TARGET_AREA}'): {len(df_itens)}")
-    if df_itens.empty:
-        raise ValueError(f"Nenhum item com SG_AREA == '{TARGET_AREA}' encontrado em {csv_path.name}.")
-
-    # 2. Busca dinâmica dos códigos CO_PROVA_MT no Dicionário (com reconciliação via CSV)
-    df_dict_math = parse_math_exam_codes(dict_path, csv_path=csv_path)
-    print(f"      Códigos identificados no Dicionário ({len(df_dict_math)}):")
-    for _, r in df_dict_math.iterrows():
-        print(f"       - [{r['TP_APLICACAO']}] Código {r['CO_PROVA']}: {r['TX_COR']} ('{r['DESC_ORIGINAL']}')")
-
-    # 3. Seleção determinística unária de cadernos (1 Regular + 1 PPL)
-    selected_exams = build_selected_math_exams(provas_dir, df_dict_math, year)
-    if not selected_exams:
-        raise RuntimeError(f"Nenhum caderno de Matemática para {year} foi localizado fisicamente em {provas_dir}.")
-
-    exam_pdf_map: Dict[int, Path] = {c: info['pdf_path'] for c, info in selected_exams.items()}
-    exam_app_map: Dict[int, str] = {c: info['tp_aplicacao'] for c, info in selected_exams.items()}
-    unique_pdfs = sorted(list(set(exam_pdf_map.values())))
-
-    print(f"\n      Cadernos de Matemática selecionados para extração:")
-    for co_prova, info in selected_exams.items():
-        print(f"       - [{info['tp_aplicacao']}] Código {co_prova} ({info['tx_cor']}): {info['pdf_path'].name}")
-
-    # 4. Extração de conteúdo dos PDFs via PyMuPDF
-    print(f"\n[3/4] Extraindo enunciados, alternativas e imagens dos PDFs de Matemática...")
     pdf_cache: Dict[str, Dict[Tuple[int, Optional[float]], Dict[str, Any]]] = {}
-    for pdf_path in unique_pdfs:
-        print(f"      Processando {pdf_path.name}...")
-        extracted = extract_questions_from_pdf(pdf_path)
-        pdf_cache[pdf_path.name] = extracted
-        print(f"      -> {len(extracted)} questões extraídas.")
+    enriched_areas_dfs = []
+    area_summaries = []
 
-    # 5. Enriquecimento dos dados
-    print(f"\n[4/4] Enriquecendo e estruturando dados tabulares de Matemática...")
-    selected_codes = set(selected_exams.keys())
-    df_reg = df_itens[df_itens['CO_PROVA'].isin(selected_codes)].copy()
-    print(f"      Total de itens de Matemática a enriquecer: {len(df_reg)}")
+    print(f"\n[3/4] Mapeando cadernos, extraindo PDFs e enriquecendo áreas...")
 
-    tp_aplicacao_list = []
-    ref_pdf_list = []
-    enunciado_list = []
-    alt_a_list = []
-    alt_b_list = []
-    alt_c_list = []
-    alt_d_list = []
-    alt_e_list = []
-    tem_imagem_list = []
+    for area in target_areas:
+        print(f"\n      >>> Processando Área: {area} <<<")
+        df_itens_area = df_itens_all[df_itens_all['SG_AREA'] == area].copy()
+        if df_itens_area.empty:
+            print(f"      [Aviso] Nenhum item para área {area} encontrado no CSV.")
+            continue
 
-    matches_count = 0
-    has_tp_lingua = ('TP_LINGUA' in df_reg.columns)
+        try:
+            df_dict_area = parse_exam_codes(dict_path, area=area, csv_path=csv_path)
+        except Exception as e:
+            print(f"      [Aviso] Falha ao ler dicionário para {area}: {e}")
+            continue
 
-    for _, row in df_reg.iterrows():
-        c_prova = int(row['CO_PROVA'])
-        c_pos = int(row['CO_POSICAO'])
+        selected_exams = build_selected_exams(provas_dir, df_dict_area, year, area=area)
+        if not selected_exams:
+            print(f"      [Aviso] Nenhum caderno para a área {area} foi localizado fisicamente.")
+            continue
 
-        t_lang_key = None
-        if has_tp_lingua:
-            t_lang = row['TP_LINGUA']
-            t_lang_key = float(t_lang) if pd.notna(t_lang) else None
+        exam_pdf_map: Dict[int, Path] = {c: info['pdf_path'] for c, info in selected_exams.items()}
+        exam_app_map: Dict[int, str] = {c: info['tp_aplicacao'] for c, info in selected_exams.items()}
 
-        tp_aplicacao_list.append(exam_app_map.get(c_prova, 'REGULAR'))
+        for co_prova, info in selected_exams.items():
+            print(f"       - [{info['tp_aplicacao']}] Código {co_prova} ({info['tx_cor']}): {info['pdf_path'].name}")
+            pdf_path = info['pdf_path']
+            if pdf_path.name not in pdf_cache:
+                print(f"         Extraindo conteúdo de {pdf_path.name}...")
+                extracted = extract_questions_from_pdf(pdf_path)
+                pdf_cache[pdf_path.name] = extracted
+                print(f"         -> {len(extracted)} questões extraídas.")
 
-        pdf_path = exam_pdf_map.get(c_prova)
-        pdf_name = pdf_path.name if pdf_path else ""
-        ref_pdf_list.append(pdf_name)
+        # Enriquecimento dos itens da área
+        selected_codes = set(selected_exams.keys())
+        df_reg = df_itens_area[df_itens_area['CO_PROVA'].isin(selected_codes)].copy()
 
-        q_dict = pdf_cache.get(pdf_name, {})
+        tp_aplicacao_list = []
+        ref_pdf_list = []
+        enunciado_list = []
+        alt_a_list = []
+        alt_b_list = []
+        alt_c_list = []
+        alt_d_list = []
+        alt_e_list = []
+        tem_imagem_list = []
 
-        # Resolução de posição no PDF (suporta anos como 2017 onde CO_POSICAO é 1..45 mas no caderno é 136..180)
-        target_pos = c_pos
-        if target_pos <= 45 and not any(k[0] == target_pos for k in q_dict.keys()):
-            if any(k[0] == target_pos + 135 for k in q_dict.keys()):
-                target_pos = target_pos + 135
-            elif any(k[0] == target_pos + 45 for k in q_dict.keys()):
-                target_pos = target_pos + 45
-            elif any(k[0] == target_pos + 90 for k in q_dict.keys()):
-                target_pos = target_pos + 90
+        matches_count = 0
+        has_tp_lingua = ('TP_LINGUA' in df_reg.columns)
 
-        q_info = q_dict.get((target_pos, t_lang_key))
+        for _, row in df_reg.iterrows():
+            c_prova = int(row['CO_PROVA'])
+            c_pos = int(row['CO_POSICAO'])
 
-        # Fallbacks de chave
-        if not q_info and t_lang_key is not None:
-            q_info = q_dict.get((target_pos, None))
-        if not q_info and t_lang_key is None:
-            q_info = q_dict.get((target_pos, 0.0))
+            t_lang_key = None
+            if has_tp_lingua:
+                t_lang = row['TP_LINGUA']
+                t_lang_key = float(t_lang) if pd.notna(t_lang) else None
 
-        if q_info:
-            matches_count += 1
-            enunciado_list.append(q_info['DESC_ENUNCIADO'])
-            alt_a_list.append(q_info['DESC_ALTER_A'])
-            alt_b_list.append(q_info['DESC_ALTER_B'])
-            alt_c_list.append(q_info['DESC_ALTER_C'])
-            alt_d_list.append(q_info['DESC_ALTER_D'])
-            alt_e_list.append(q_info['DESC_ALTER_E'])
-            tem_imagem_list.append(q_info['IN_ITEM_IMAGEM'])
-        else:
-            enunciado_list.append("")
-            alt_a_list.append("")
-            alt_b_list.append("")
-            alt_c_list.append("")
-            alt_d_list.append("")
-            alt_e_list.append("")
-            tem_imagem_list.append(0)
+            tp_aplicacao_list.append(exam_app_map.get(c_prova, 'REGULAR'))
+            pdf_path = exam_pdf_map.get(c_prova)
+            pdf_name = pdf_path.name if pdf_path else ""
+            ref_pdf_list.append(pdf_name)
 
-    df_reg['ANO_APLICACAO'] = int(year)
-    df_reg['TP_APLICACAO'] = tp_aplicacao_list
-    df_reg['REF_ARQUIVO_PDF'] = ref_pdf_list
-    df_reg['DESC_ENUNCIADO'] = enunciado_list
-    df_reg['DESC_ALTER_A'] = alt_a_list
-    df_reg['DESC_ALTER_B'] = alt_b_list
-    df_reg['DESC_ALTER_C'] = alt_c_list
-    df_reg['DESC_ALTER_D'] = alt_d_list
-    df_reg['DESC_ALTER_E'] = alt_e_list
-    df_reg['IN_ITEM_IMAGEM'] = tem_imagem_list
+            q_dict = pdf_cache.get(pdf_name, {})
 
-    # Reordena colunas preservando a ordem canônica
-    ordered_cols = [c for c in CANONICAL_COLUMNS if c in df_reg.columns] + [
-        c for c in df_reg.columns if c not in CANONICAL_COLUMNS
+            # Resolução de offset
+            target_pos = c_pos
+            if target_pos <= 45 and not any(k[0] == target_pos for k in q_dict.keys()):
+                if any(k[0] == target_pos + 135 for k in q_dict.keys()):
+                    target_pos = target_pos + 135
+                elif any(k[0] == target_pos + 90 for k in q_dict.keys()):
+                    target_pos = target_pos + 90
+                elif any(k[0] == target_pos + 45 for k in q_dict.keys()):
+                    target_pos = target_pos + 45
+
+            q_info = q_dict.get((target_pos, t_lang_key))
+            if not q_info and t_lang_key is not None:
+                q_info = q_dict.get((target_pos, None))
+            if not q_info and t_lang_key is None:
+                q_info = q_dict.get((target_pos, 0.0))
+
+            if q_info:
+                matches_count += 1
+                enunciado_list.append(q_info['DESC_ENUNCIADO'])
+                alt_a_list.append(q_info['DESC_ALTER_A'])
+                alt_b_list.append(q_info['DESC_ALTER_B'])
+                alt_c_list.append(q_info['DESC_ALTER_C'])
+                alt_d_list.append(q_info['DESC_ALTER_D'])
+                alt_e_list.append(q_info['DESC_ALTER_E'])
+                tem_imagem_list.append(q_info['IN_ITEM_IMAGEM'])
+            else:
+                enunciado_list.append("")
+                alt_a_list.append("")
+                alt_b_list.append("")
+                alt_c_list.append("")
+                alt_d_list.append("")
+                alt_e_list.append("")
+                tem_imagem_list.append(0)
+
+        df_reg['ANO_APLICACAO'] = int(year)
+        df_reg['TP_APLICACAO'] = tp_aplicacao_list
+        df_reg['REF_ARQUIVO_PDF'] = ref_pdf_list
+        df_reg['DESC_ENUNCIADO'] = enunciado_list
+        df_reg['DESC_ALTER_A'] = alt_a_list
+        df_reg['DESC_ALTER_B'] = alt_b_list
+        df_reg['DESC_ALTER_C'] = alt_c_list
+        df_reg['DESC_ALTER_D'] = alt_d_list
+        df_reg['DESC_ALTER_E'] = alt_e_list
+        df_reg['IN_ITEM_IMAGEM'] = tem_imagem_list
+
+        pct = (matches_count / len(df_reg) * 100.0) if len(df_reg) > 0 else 0.0
+        area_summaries.append({
+            'area': area,
+            'itens': len(df_reg),
+            'matches': matches_count,
+            'pct': pct,
+            'imagens': df_reg['IN_ITEM_IMAGEM'].sum()
+        })
+        print(f"      -> {matches_count}/{len(df_reg)} ({pct:.1f}%) itens enriquecidos para {area}.")
+        enriched_areas_dfs.append(df_reg)
+
+    if not enriched_areas_dfs:
+        raise RuntimeError(f"Nenhum item enriquecido para {year} nas áreas {target_areas}.")
+
+    df_combined = pd.concat(enriched_areas_dfs, ignore_index=True)
+    ordered_cols = [c for c in CANONICAL_COLUMNS if c in df_combined.columns] + [
+        c for c in df_combined.columns if c not in CANONICAL_COLUMNS
     ]
-    df_reg = df_reg[ordered_cols]
-
-    # Aplica a preservação estrita de tipagem (inteiros sem .0 e floats contínuos)
-    df_reg = enforce_column_types(df_reg)
+    df_combined = df_combined[ordered_cols]
+    df_combined = enforce_column_types(df_combined)
 
     out_folder = output_dir or (root_dir / "processed")
     out_folder.mkdir(parents=True, exist_ok=True)
-    out_file = out_folder / f"itens_prova_{year}_enriquecido.csv"
 
-    # Salva em UTF-8 com BOM e delimitador ;
-    df_reg.to_csv(out_file, sep=';', index=False, encoding='utf-8-sig')
+    if target_areas == ['MT']:
+        out_file = out_folder / f"itens_prova_{year}_enriquecido.csv"
+    elif len(target_areas) == 1:
+        out_file = out_folder / f"itens_prova_{year}_{target_areas[0].lower()}_enriquecido.csv"
+    else:
+        out_file = out_folder / f"itens_prova_{year}_enriquecido.csv"
+
+    df_combined.to_csv(out_file, sep=';', index=False, encoding='utf-8-sig')
 
     elapsed = time.time() - start_time
-    reg_count = (df_reg['TP_APLICACAO'] == 'REGULAR').sum()
-    ppl_count = (df_reg['TP_APLICACAO'] == 'REAPLICACAO_PPL').sum()
+    total_items = len(df_combined)
+    total_matches = sum(s['matches'] for s in area_summaries)
+    match_pct = (total_matches / total_items * 100.0) if total_items > 0 else 0.0
 
     print(f"\n========================================================")
-    print(f" PIPELINE DE MATEMÁTICA CONCLUÍDA COM SUCESSO!")
+    print(f" PIPELINE ENEM CONCLUÍDA COM SUCESSO!")
     print(f" Edição (Ano):                 {year}")
-    print(f" Itens Prova Regular (P1):     {reg_count}")
-    print(f" Itens Reaplicação/PPL (P2):   {ppl_count}")
-    print(f" Total de itens enriquecidos:  {len(df_reg)}")
-    print(f" Taxa de correspondência:      {matches_count}/{len(df_reg)} ({matches_count/len(df_reg)*100:.1f}%)")
-    print(f" Itens com imagem identificada: {df_reg['IN_ITEM_IMAGEM'].sum()} ({df_reg['IN_ITEM_IMAGEM'].mean()*100:.1f}%)")
+    print(f" Áreas processadas:            {', '.join([s['area'] for s in area_summaries])}")
+    print(f" Total de itens enriquecidos:  {total_items}")
+    print(f" Taxa de correspondência:      {total_matches}/{total_items} ({match_pct:.1f}%)")
     print(f" Arquivo gerado:               {out_file}")
     print(f" Tempo total:                  {elapsed:.2f}s")
     print(f"========================================================\n")
 
-    return df_reg
+    return df_combined
 
 
 def consolidate_all_years(

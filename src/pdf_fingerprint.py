@@ -82,14 +82,22 @@ def inspect_exam_pdf(pdf_path: Path) -> Optional[Dict[str, Any]]:
     if any(kw in cover_upper for kw in ['SUPERAMPLIADA', 'AMPLIADA', 'LIBRAS', 'BRAILE']):
         return None
 
-    # 4. Verificação de Dia 2 / Área de Matemática
-    is_dia2 = False
+    # 4. Verificação do Dia da Prova (Dia 1 vs Dia 2)
+    detected_day = None
     if any(k in name_upper for k in ['DIA_2', 'DIA2', 'DOM', 'D2', 'CAD_05', 'CAD_06', 'CAD_07', 'CAD_08', 'CADERNO5', 'CADERNO6', 'CADERNO7', 'CADERNO8']):
-        is_dia2 = True
-    elif re.search(r'2\s*[º°ªoO]?\s*DIA', cover_upper) or 'DOMINGO' in cover_upper or 'MATEMÁTICA' in cover_upper:
-        is_dia2 = True
+        detected_day = 2
+    elif any(k in name_upper for k in ['DIA_1', 'DIA1', 'SAB', 'D1', 'CAD_01', 'CAD_02', 'CAD_03', 'CAD_04', 'CADERNO1', 'CADERNO2', 'CADERNO3', 'CADERNO4']):
+        detected_day = 1
+    elif re.search(r'2\s*[º°ªoO]?\s*DIA', cover_upper) or 'DOMINGO' in cover_upper:
+        detected_day = 2
+    elif re.search(r'1\s*[º°ªoO]?\s*DIA', cover_upper) or 'SÁBADO' in cover_upper or 'SABADO' in cover_upper:
+        detected_day = 1
+    elif 'MATEMÁTICA' in cover_upper:
+        detected_day = 2
+    elif 'CIÊNCIAS HUMANAS' in cover_upper or 'LINGUAGENS' in cover_upper:
+        detected_day = 1
 
-    if not is_dia2:
+    if detected_day is None:
         return None
 
     # 5. Verificação da Aplicação (P1 vs P2 / Reaplicação / PPL)
@@ -135,15 +143,15 @@ def inspect_exam_pdf(pdf_path: Path) -> Optional[Dict[str, Any]]:
         'path': pdf_path,
         'app': app,
         'color': detected_color,
-        'day': 2,
+        'day': detected_day,
         'pages': page_count
     }
 
 
-def scan_provas_directory(provas_dir: Path) -> List[Dict[str, Any]]:
+def scan_provas_directory(provas_dir: Path, target_day: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Percorre recursivamente a pasta de provas, inspeciona todos os arquivos PDF
-    e retorna uma lista de cadernos válidos de Matemática identificados.
+    e retorna uma lista de cadernos válidos identificados (opcionalmente filtrados por dia).
     """
     if not provas_dir.exists():
         return []
@@ -160,6 +168,8 @@ def scan_provas_directory(provas_dir: Path) -> List[Dict[str, Any]]:
 
             info = inspect_exam_pdf(p)
             if info:
+                if target_day is not None and info['day'] != target_day:
+                    continue
                 candidates.append(info)
 
     return candidates
