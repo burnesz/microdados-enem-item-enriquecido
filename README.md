@@ -92,7 +92,6 @@ microdados-enem-item-enriquecido/
 │
 ├── main.py                               # Ponto de entrada CLI simplificado
 ├── requirements.txt                      # Dependências Python (pandas, openpyxl, pymupdf)
-├── AGENTS.md                             # Contexto arquitetural e regras para agentes de IA
 └── README.md                             # Este guia
 ```
 
