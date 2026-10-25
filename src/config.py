@@ -148,7 +148,15 @@ EXPLICIT_IMAGE_REGEX = re.compile(
     r'como\s+mostra\s+o\s+esquema|'
     r'indicad[ao]s?\s+no\s+esquema|'
     r'no\s+mapa\s+(?:a\s+seguir|abaixo)|'
-    r'indicad[ao]s?\s+no\s+mapa|'
+    r'indicad[ao]s?\s+no\s+mapa'
+    r')\b',
+    re.IGNORECASE
+)
+
+# Referências textuais explícitas a tabelas/quadros: só indicam imagem quando a tabela
+# não pôde ser estruturada em texto (ver src/table_extractor.py)
+EXPLICIT_TABLE_REGEX = re.compile(
+    r'\b(?:'
     r'a\s+tabela\s+(?:a\s+seguir|abaixo|apresenta|mostra|indica|ilustra|representa)|'
     r'na\s+tabela\s+(?:a\s+seguir|abaixo)|'
     r'as\s+tabelas\s+(?:a\s+seguir|abaixo|apresentam|mostram)|'
@@ -211,7 +219,8 @@ CANONICAL_COLUMNS = [
     'DESC_ALTER_C',
     'DESC_ALTER_D',
     'DESC_ALTER_E',
-    'IN_ITEM_IMAGEM'
+    'IN_ITEM_IMAGEM',
+    'IN_ITEM_TABELA'
 ]
 
 # Colunas numéricas inteiras que devem ser preservadas sem decimais (.0)
@@ -225,7 +234,8 @@ INTEGER_COLUMNS = [
     'TP_LINGUA',
     'IN_ITEM_ADAPTADO',
     'TP_VERSAO_DIGITAL',
-    'IN_ITEM_IMAGEM'
+    'IN_ITEM_IMAGEM',
+    'IN_ITEM_TABELA'
 ]
 
 # Colunas decimais contínuas (parâmetros psicométricos da TRI)

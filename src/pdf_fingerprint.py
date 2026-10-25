@@ -55,6 +55,9 @@ def inspect_exam_pdf(pdf_path: Path) -> Optional[Dict[str, Any]]:
         return None
 
     # Exceção histórica conhecida de 2011: P1 Dia 2 foi publicado como CINZA_LEDOR pelo INEP
+    # (único caderno P1 Dia 2 do pacote). Não é prova adaptada: é o caderno regular 6 Cinza com selo
+    # "LEDOR" na capa — fonte normal, mesmas questões 91–180 e gabarito idêntico (45/45) ao da prova
+    # regular CO_PROVA 130; os microdados de 2011 não têm código de prova Ledor.
     if 'LEDOR' in name_upper and not ('2011' in name_upper and 'CAD_06' in name_upper):
         return None
 
@@ -100,6 +103,10 @@ def inspect_exam_pdf(pdf_path: Path) -> Optional[Dict[str, Any]]:
     if detected_day is None:
         return None
 
+    # Dia lido apenas da capa (sem considerar o nome do arquivo); None se a capa for ambígua
+    cover_days = {d for d, pat in ((1, r'1\s*[º°ªoO]?\s*DIA'), (2, r'2\s*[º°ªoO]?\s*DIA')) if re.search(pat, cover_upper)}
+    cover_day = cover_days.pop() if len(cover_days) == 1 else None
+
     # 5. Verificação da Aplicação (P1 vs P2 / Reaplicação / PPL)
     is_p2 = False
     if 'SEGUNDA APLICAÇÃO' in parent_upper or 'SEGUNDA APLICACAO' in parent_upper or 'P2' in parent_upper:
@@ -144,6 +151,7 @@ def inspect_exam_pdf(pdf_path: Path) -> Optional[Dict[str, Any]]:
         'app': app,
         'color': detected_color,
         'day': detected_day,
+        'cover_day': cover_day,
         'pages': page_count
     }
 

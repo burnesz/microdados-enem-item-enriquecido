@@ -84,6 +84,11 @@ def standardize_provas_filenames(provas_dir: Path, year: int) -> List[Tuple[Path
             if not info:
                 continue
 
+            # O catálogo canônico só cobre o 2º dia: cadernos do 1º dia (pelo nome ou pela capa)
+            # nunca são renomeados (ex.: 2017, onde o 1º dia virava CAD_05_DIA_2_AMARELO)
+            if info['day'] != 2 or info.get('cover_day') not in (2, None):
+                continue
+
             app = info['app']
             color = info['color']
             canonical_name = year_catalog.get((app, 2, color))

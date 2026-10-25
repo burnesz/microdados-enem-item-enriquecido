@@ -2,9 +2,11 @@
 Módulo para extração de texto, enunciados, alternativas e detecção de imagens dos PDFs do ENEM.
 """
 
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any
 import re
+import unicodedata
 import pymupdf
 
 from src.config import (
@@ -18,10 +20,80 @@ from src.config import (
     QUESTION_SPLIT_REGEX,
     ALT_LINE_REGEX,
     IMAGE_ALT_PLACEHOLDER,
-    EXPLICIT_IMAGE_REGEX
+    EXPLICIT_IMAGE_REGEX,
+    EXPLICIT_TABLE_REGEX
 )
+from src.table_extractor import PageTable, extract_page_tables
 
-def build_indesign_identity_h_cmap() -> str:
+# Marcador provisório de tabela estruturada no fluxo de texto (página.índice), substituído pelo Markdown
+TABLE_PLACEHOLDER = '⟦TABELA:{}.{}⟧'
+TABLE_PLACEHOLDER_REGEX = re.compile(r'\s*⟦TABELA:(\d+)\.(\d+)⟧\s*')
+
+# Ordem de glifos das fontes Arial (TrueType): a ordem padrão do Macintosh (índices 0-257 da tabela
+# 'post') sem 'nonbreakingspace' (172) e 'apple' (210), que a Arial não possui. Nomes InDesign /g<N> e
+# CIDs com CIDToGIDMap Identity referem-se a esses índices. Validado pelas larguras das fontes do corpus
+# (ex.: 112 'é' 556, 131 '°' 400, 168 'Δ' 612, 178 '—' 1000, 200 'Á' 722 em negrito, 237 '−' 584).
+_MAC_ORDER_HIGH = (
+    'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©™´¨≠ÆØ∞±≤≥¥µ∂∑∏π∫ªºΩæø¿¡¬√ƒ≈Δ«»…\x00ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄¤‹›'
+    '\x01\x02‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔ\x00ÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇŁłŠšŽž¦ÐðÝýÞþ-×¹²³½¼¾₣ĞğİŞşĆćČčđ'
+)
+ARIAL_GLYPH_CHARS: List[str] = [''] * 3 + [chr(i + 29) for i in range(3, 98)] + [
+    {'\x01': 'fi', '\x02': 'fl'}.get(c, c) for c in _MAC_ORDER_HIGH if c != '\x00'
+]
+
+# Letras e dígitos do bloco alfanumérico matemático (ex.: 𝜋 itálico da Cambria Math), que a fonte
+# repete com um segundo glifo de largura zero; viram o caractere comum (π)
+MATH_ALNUM_REGEX = re.compile(r'([\U0001D400-\U0001D7FF])\1?')
+
+# Espaço fino (largura 83/1000) entre letra e índice: removido na montagem do texto, pois o
+# espaçamento real já vem da posição dos glifos
+HAIR_SPACE = '\u200a'
+
+# Glifos além da ordem padrão (índice >= 256) nas fontes Arial, por estilo (os índices altos diferem
+# entre estilos). Identificados visualmente nos cadernos e conferidos pela largura declarada, pois os
+# subconjuntos embutidos não trazem tabelas 'post'/'cmap' com nomes. Ex.: ArialMT 314 '→' (largura
+# 1000, em 2010 e 2021), 400 'ℓ' (2010), 3437 '2' sobrescrito em m⁻² (556), 3675-3680 Q₁…Q₆ (2023);
+# Arial-ItalicMT 2288 espaço fino (83, em 2021 e 2023), 2577 a variável I (2023 Q163).
+ARIAL_HIGH_GLYPHS: Dict[str, Dict[int, str]] = {
+    'ArialMT': {
+        307: 'φ', 314: '→', 326: '–', 400: 'ℓ', 540: 'λ', 652: 'π', 3433: '8', 3437: '2', 3438: '3',
+        3675: '₁', 3676: '₂', 3677: '₃', 3678: '₄', 3679: '₅', 3680: '₆',
+    },
+    'Arial-ItalicMT': {408: 'Ĉ', 975: 'ℰ', 2288: HAIR_SPACE, 2476: 'ℰ', 2577: 'I'},
+    'Arial-BoldMT': {3032: HAIR_SPACE},
+}
+
+# Cambria Math (itálico matemático do Word), mesma identificação visual + largura; os índices
+# 3397 '+' e 3398 '−' repetem-se em 2021 P1 e P2 com o mesmo glifo. Também completa os /ToUnicode
+# que apontam glifos para U+FFFD (2011 P1: 3 espaço, 1857 'e', 3404 '=', 3493 '√').
+CAMBRIA_MATH_GLYPHS: Dict[int, str] = {
+    3: ' ', 521: '⋅', 543: 'Δ', 882: '0', 885: '3', 1488: '∈', 1828: 'B', 1857: 'e', 1859: 'g', 2029: 'v',
+    3397: '+', 3398: '-', 3404: '=', 3493: '√',
+}
+
+# Nomes de glifo corrompidos no próprio PDF de origem (';#2323...'), por subconjunto de fonte
+# (o prefixo é único de cada arquivo), identificados visualmente.
+SOURCE_GLYPH_FIXES: Dict[str, Dict[int, str]] = {
+    'HNLNDB+ArialMT': {0xA3: '2', 0xA4: '3'},  # ENEM 2010 PPL: a fração 2/3
+}
+
+def font_style(base_font: str) -> str:
+    """Nome da fonte sem prefixo de subconjunto nem sufixo de codificação (ex.: 'ArialMT')."""
+    return re.sub(r'-Identity-H$', '', base_font.split('+')[-1])
+
+def arial_glyph_to_unicode(gname: str, base_font: str = '') -> Optional[str]:
+    """Nome InDesign /g<N> em fonte Arial -> caractere pela ordem de glifos da Arial."""
+    m = re.fullmatch(r'g(\d+)', gname)
+    if m:
+        n = int(m.group(1))
+        if 3 <= n < len(ARIAL_GLYPH_CHARS):
+            return ARIAL_GLYPH_CHARS[n]
+        high = ARIAL_HIGH_GLYPHS.get(font_style(base_font), {})
+        if n in high:
+            return high[n]
+    return glyph_to_unicode(gname)
+
+def build_indesign_identity_h_cmap(extra: Optional[Dict[int, str]] = None, arial: bool = False) -> str:
     """
     Constrói um CMap /ToUnicode para fontes Type0 /Identity-H geradas pelo Adobe InDesign
     que foram incorporadas sem tabela ToUnicode nos PDFs do ENEM.
@@ -58,6 +130,10 @@ def build_indesign_identity_h_cmap() -> str:
         0xC0: 'fl',
         0x28C: 'π',
     }
+    if arial:
+        # Fontes Arial: CIDs 3-255 pela ordem de glifos da Arial (substitui os palpites acima nessa faixa)
+        extra_cids.update({cid: ch for cid, ch in enumerate(ARIAL_GLYPH_CHARS) if ch})
+    extra_cids.update(extra or {})
     for cid, ch in extra_cids.items():
         mappings.append((cid, ch))
 
@@ -139,26 +215,47 @@ def build_calibri_cmap() -> str:
     ])
     return '\n'.join(lines)
 
+# Codificação Adobe Symbol (código do caractere -> Unicode). O sinal de menos é mantido como '-' ASCII,
+# como no restante da pipeline; peças de colchetes/chaves escaláveis viram o delimitador simples.
+SYMBOL_ENCODING_UNICODE: Dict[int, str] = {
+    0x20: ' ', 0x21: '!', 0x22: '∀', 0x23: '#', 0x24: '∃', 0x25: '%', 0x26: '&', 0x27: '∋',
+    0x28: '(', 0x29: ')', 0x2A: '*', 0x2B: '+', 0x2C: ',', 0x2D: '-', 0x2E: '.', 0x2F: '/',
+    0x3A: ':', 0x3B: ';', 0x3C: '<', 0x3D: '=', 0x3E: '>', 0x3F: '?', 0x40: '≅',
+    0x41: 'Α', 0x42: 'Β', 0x43: 'Χ', 0x44: 'Δ', 0x45: 'Ε', 0x46: 'Φ', 0x47: 'Γ', 0x48: 'Η',
+    0x49: 'Ι', 0x4A: 'ϑ', 0x4B: 'Κ', 0x4C: 'Λ', 0x4D: 'Μ', 0x4E: 'Ν', 0x4F: 'Ο', 0x50: 'Π',
+    0x51: 'Θ', 0x52: 'Ρ', 0x53: 'Σ', 0x54: 'Τ', 0x55: 'Υ', 0x56: 'ς', 0x57: 'Ω', 0x58: 'Ξ',
+    0x59: 'Ψ', 0x5A: 'Ζ', 0x5B: '[', 0x5C: '∴', 0x5D: ']', 0x5E: '⊥', 0x5F: '_',
+    0x61: 'α', 0x62: 'β', 0x63: 'χ', 0x64: 'δ', 0x65: 'ε', 0x66: 'φ', 0x67: 'γ', 0x68: 'η',
+    0x69: 'ι', 0x6A: 'ϕ', 0x6B: 'κ', 0x6C: 'λ', 0x6D: 'μ', 0x6E: 'ν', 0x6F: 'ο', 0x70: 'π',
+    0x71: 'θ', 0x72: 'ρ', 0x73: 'σ', 0x74: 'τ', 0x75: 'υ', 0x76: 'ϖ', 0x77: 'ω', 0x78: 'ξ',
+    0x79: 'ψ', 0x7A: 'ζ', 0x7B: '{', 0x7C: '|', 0x7D: '}', 0x7E: '∼',
+    0xA1: 'ϒ', 0xA2: '′', 0xA3: '≤', 0xA4: '⁄', 0xA5: '∞', 0xA6: 'ƒ', 0xA7: '♣', 0xA8: '♦',
+    0xA9: '♥', 0xAA: '♠', 0xAB: '↔', 0xAC: '←', 0xAD: '↑', 0xAE: '→', 0xAF: '↓', 0xB0: '°',
+    0xB1: '±', 0xB2: '″', 0xB3: '≥', 0xB4: '×', 0xB5: '∝', 0xB6: '∂', 0xB7: '•', 0xB8: '÷',
+    0xB9: '≠', 0xBA: '≡', 0xBB: '≈', 0xBC: '…', 0xBF: '↵', 0xC0: 'ℵ', 0xC1: 'ℑ', 0xC2: 'ℜ',
+    0xC3: '℘', 0xC4: '⊗', 0xC5: '⊕', 0xC6: '∅', 0xC7: '∩', 0xC8: '∪', 0xC9: '⊃', 0xCA: '⊇',
+    0xCB: '⊄', 0xCC: '⊂', 0xCD: '⊆', 0xCE: '∈', 0xCF: '∉', 0xD0: '∠', 0xD1: '∇', 0xD2: '®',
+    0xD3: '©', 0xD4: '™', 0xD5: '∏', 0xD6: '√', 0xD7: '⋅', 0xD8: '¬', 0xD9: '∧', 0xDA: '∨',
+    0xDB: '⇔', 0xDC: '⇐', 0xDD: '⇑', 0xDE: '⇒', 0xDF: '⇓', 0xE0: '◊', 0xE1: '〈', 0xE5: '∑',
+    0xE6: '(', 0xE7: '(', 0xE8: '(', 0xE9: '[', 0xEA: '[', 0xEB: '[', 0xEC: '{', 0xED: '{',
+    0xEE: '{', 0xF1: '〉', 0xF2: '∫', 0xF6: ')', 0xF7: ')', 0xF8: ')', 0xF9: ']', 0xFA: ']',
+    0xFB: ']', 0xFC: '}', 0xFD: '}', 0xFE: '}',
+}
+for _n in range(10):
+    SYMBOL_ENCODING_UNICODE[0x30 + _n] = str(_n)
+
 def build_symbol_cmap() -> str:
     """
     Constrói um CMap /ToUnicode para fontes Symbol e SymbolMT Type0 /Identity-H.
+    Nessas fontes o CID é o índice do glifo na SymbolMT: CID = código - 29 na faixa ASCII
+    (0x20..0x7E) e CID = código - 63 na faixa alta (0xA1..0xFE). A convenção foi validada
+    pelas larguras /W de todas as fontes do corpus (ex.: CID 14 '+', 31 '<', 32 '=', 100 '≤',
+    117 '×' com 549; CID 3 espaço com 250; CID 143 '∈' com 713).
     """
-    symbol_map = {
-        0x0020: ' ', 0x002B: '+', 0x002D: '-', 0x003D: '=', 0x002F: '/',
-        0x0070: 'π', 0x0053: 'π', 0x0061: 'α', 0x0062: 'β', 0x0067: 'γ', 0x0064: 'δ',
-        0x0071: 'θ', 0x006C: 'λ', 0x006D: 'μ', 0x0073: 'σ', 0x0077: 'ω',
-        0x0044: 'Δ', 0x0050: 'Π', 0x0057: 'Ω',
-        0x0098: '⋅', 0x00B7: '⋅', 0x00B4: '×', 0x00D7: '×', 0x0075: '×',
-        0x00A3: '≤', 0x00B3: '≥', 0x00B9: '≠', 0x00BB: '≈', 0x00B1: '±',
-        0x00B8: '÷', 0x00A5: '∞', 0x0066: '∞', 0x00B0: '°', 0x0087: '∅',
-        0x0010: '-', 0x0028: '(', 0x0029: ')', 0x005B: '[', 0x005D: ']',
-        # InDesign operadores e parênteses escaláveis para matrizes e fórmulas
-        0x001F: '-', 0x001E: '=',
-        0x001D: '(', 0x001C: '(', 0x001B: '(',
-        0x001A: ')', 0x0019: ')', 0x0018: ')'
-    }
-    for n in range(10):
-        symbol_map[0x0030 + n] = str(n)
+    symbol_map = {}
+    for code, ch in SYMBOL_ENCODING_UNICODE.items():
+        cid = code - 29 if code <= 0x7E else code - 63
+        symbol_map[cid] = ch
 
     lines = [
         '/CIDInit /ProcSet findresource begin',
@@ -205,7 +302,15 @@ SYMBOL_MAP: Dict[str, str] = {
     '\x1d': '(', '\x1c': '(', '\x1b': '(',
     '\x1a': ')', '\x19': ')', '\x18': ')',
     'π': r'\pi', 'Σ': r'\pi', 'α': r'\alpha', 'β': r'\beta', 'θ': r'\theta',
-    '⋅': r'\cdot', '×': r'\times', '≤': r'\le', '≥': r'\ge', '≠': r'\ne', '≈': r'\approx', '±': r'\pm'
+    '⋅': r'\cdot', '×': r'\times', '≤': r'\le', '≥': r'\ge', '≠': r'\ne', '≈': r'\approx', '±': r'\pm',
+    # Caracteres Unicode produzidos pelo CMap de build_symbol_cmap
+    'γ': r'\gamma', 'δ': r'\delta', 'ε': r'\varepsilon', 'λ': r'\lambda', 'μ': r'\mu', 'ν': r'\nu',
+    'ρ': r'\rho', 'σ': r'\sigma', 'τ': r'\tau', 'φ': r'\varphi', 'ω': r'\omega',
+    'Δ': r'\Delta', 'Π': r'\Pi', 'Ω': r'\Omega',
+    '•': r'\cdot', '∞': r'\infty', '∅': r'\varnothing', '∈': r'\in', '∉': r'\notin',
+    '≡': r'\equiv', '÷': r'\div', '°': r'^\circ', '∂': r'\partial', '∑': r'\sum',
+    '∩': r'\cap', '∪': r'\cup', '⊂': r'\subset', '⊃': r'\supset',
+    'υ': r'\upsilon', '≅': r'\cong', '→': r'\rightarrow', '⇒': r'\Rightarrow'
 }
 
 # Mapeamento de caracteres matemáticos Unicode em texto padrão para LaTeX
@@ -216,7 +321,7 @@ UNICODE_MATH_MAP: Dict[str, str] = {
     '₅': '_5', '₆': '_6', '₇': '_7', '₈': '_8', '₉': '_9',
     'π': r'\pi', 'Σ': r'\pi', '×': r'\times', '÷': r'\div', '±': r'\pm',
     '≤': r'\le', '≥': r'\ge', '≠': r'\ne', '≈': r'\approx',
-    '•': r'\bullet', '°': r'^\circ', '⋅': r'\cdot', '√': r'\sqrt'
+    '•': r'\bullet', '°': r'^\circ', '⋅': r'\cdot', '√': r'\sqrt', 'ℝ': r'\mathbb{R}'
 }
 
 ADOBE_STANDARD_GLYPHS: Dict[str, str] = {
@@ -276,7 +381,19 @@ def glyph_to_unicode(gname: str) -> Optional[str]:
             return chr(cid + 29)
     return None
 
-def build_tounicode_from_differences(enc_str: str) -> Optional[str]:
+def symbol_glyph_to_unicode(gname: str) -> Optional[str]:
+    """
+    Nomes InDesign /g<N> em fontes SymbolMT referem-se ao índice do glifo na SymbolMT original,
+    na mesma convenção de build_symbol_cmap (N + 29 na faixa ASCII, N + 63 na faixa alta).
+    Validado pelas larguras /Widths das fontes do corpus (ex.: g100 '≤' 549, g113 '°' 400,
+    g143 '∈' 713, g95 '|' 200). Nomes padrão (ex.: 'plus') seguem glyph_to_unicode.
+    """
+    if re.fullmatch(r'g\d+', gname):
+        n = int(gname[1:])
+        return SYMBOL_ENCODING_UNICODE.get(n + 29 if n <= 97 else n + 63)
+    return glyph_to_unicode(gname)
+
+def build_tounicode_from_differences(enc_str: str, font_name: str = '') -> Optional[str]:
     m = re.search(r'/Differences\s*\[(.*?)\]', enc_str, re.DOTALL)
     if not m:
         return None
@@ -288,10 +405,19 @@ def build_tounicode_from_differences(enc_str: str) -> Optional[str]:
             curr_code = int(tok)
         elif tok.startswith('/'):
             gname = tok[1:]
-            u = glyph_to_unicode(gname)
+            gnum = re.fullmatch(r'g(\d+)', gname)
+            if 'Symbol' in font_name:
+                u = symbol_glyph_to_unicode(gname)
+            elif 'Arial' in font_name:
+                u = arial_glyph_to_unicode(gname, font_name)
+            elif 'CambriaMath' in font_name and gnum and int(gnum.group(1)) in CAMBRIA_MATH_GLYPHS:
+                u = CAMBRIA_MATH_GLYPHS[int(gnum.group(1))]
+            else:
+                u = glyph_to_unicode(gname)
             if u:
                 code_to_uni[curr_code] = u
             curr_code += 1
+    code_to_uni.update(SOURCE_GLYPH_FIXES.get(font_name, {}))
     if not code_to_uni:
         return None
     lines = [
@@ -322,12 +448,96 @@ def build_tounicode_from_differences(enc_str: str) -> Optional[str]:
     ])
     return '\n'.join(lines)
 
+# Área de uso privado da Adobe com peças de delimitadores escaláveis (fontes Symbol). A peça
+# extensora fica na linha da fórmula e vira o delimitador; topo e base ficam nas linhas vizinhas
+# e viram espaço (senão sobram soltas acima e abaixo da expressão).
+ADOBE_PUA_PIECES: Dict[int, str] = {cp: ' ' for cp in range(0xF8E5, 0xF8FF)}
+ADOBE_PUA_PIECES.update({
+    0xF8EC: '(', 0xF8F7: ')', 0xF8EF: '[', 0xF8FA: ']', 0xF8F2: '{', 0xF8FD: '}',
+    0xF8E8: '®', 0xF8E9: '©', 0xF8EA: '™',
+})
+
+# MT Extra (MathType), glifos identificados visualmente nos cadernos. Os acentos (seta de vetor
+# sobre F, chapéu de ângulo sobre PRQ) não têm posição representável em texto linear: viram espaço.
+MT_EXTRA_PUA: Dict[int, str] = {0xF0A1: 'ℝ', 0xF072: ' ', 0xF0B5: ' '}
+
+def remap_private_use(cp: int, base_font: str) -> Optional[str]:
+    """
+    Converte um ponto de código da área de uso privado produzido pelo /ToUnicode de fontes
+    simbólicas no caractere real. Fontes da família Symbol usam a convenção Windows
+    U+F000 + código na codificação Symbol (ex.: U+F02B '+', U+F0DE '⇒').
+    """
+    if 'Symbol' in base_font:
+        if 0xF020 <= cp <= 0xF0FF:
+            return SYMBOL_ENCODING_UNICODE.get(cp - 0xF000)
+        return ADOBE_PUA_PIECES.get(cp)
+    if 'MT-Extra' in base_font or 'MTExtra' in base_font:
+        return MT_EXTRA_PUA.get(cp)
+    return None
+
+def remap_tounicode_private_use(cmap: str, base_font: str) -> Optional[str]:
+    """
+    Reescreve um /ToUnicode existente substituindo destinos na área de uso privado
+    (remap_private_use) e, na Cambria Math, destinos U+FFFD pelo glifo (CAMBRIA_MATH_GLYPHS).
+    Retorna o novo CMap, ou None se nada mudou.
+    """
+
+    def utf16(h: str) -> str:
+        return bytes.fromhex(h).decode('utf-16-be', errors='replace') if h else ''
+
+    mapping: Dict[str, str] = {}
+    for block in re.findall(r'beginbfchar(.*?)endbfchar', cmap, re.S):
+        for src, dst in re.findall(r'<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]*)>', block):
+            mapping[src.upper()] = utf16(dst)
+    for block in re.findall(r'beginbfrange(.*?)endbfrange', cmap, re.S):
+        for lo, hi, dst in re.findall(r'<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(\[[^\]]*\]|<[0-9A-Fa-f]*>)', block):
+            a, b, width = int(lo, 16), int(hi, 16), len(lo)
+            if dst.startswith('['):
+                for i, d in enumerate(re.findall(r'<([0-9A-Fa-f]*)>', dst)):
+                    mapping[f'{a + i:0{width}X}'] = utf16(d)
+            else:
+                base = dst[1:-1]
+                for i in range(b - a + 1):
+                    mapping[f'{a + i:0{width}X}'] = utf16(f'{int(base, 16) + i:0{len(base)}X}')
+
+    changed = False
+    for src, dst in mapping.items():
+        new = remap_private_use(ord(dst), base_font) if len(dst) == 1 and 0xE000 <= ord(dst) <= 0xF8FF else None
+        if dst == '\ufffd' and 'CambriaMath' in base_font:
+            new = CAMBRIA_MATH_GLYPHS.get(int(src, 16))
+        if new:
+            mapping[src] = new
+            changed = True
+    if not changed:
+        return None
+
+    codespace = re.search(r'\d+\s+begincodespacerange.*?endcodespacerange', cmap, re.S)
+    lines = [
+        '/CIDInit /ProcSet findresource begin',
+        '12 dict begin',
+        'begincmap',
+        '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def',
+        '/CMapName /Custom-PUA-Remap def',
+        '/CMapType 2 def',
+        codespace.group(0) if codespace else '1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange',
+    ]
+    items = [(s, d) for s, d in sorted(mapping.items()) if d]
+    for i in range(0, len(items), 100):
+        chunk = items[i:i + 100]
+        lines.append(f'{len(chunk)} beginbfchar')
+        for src, dst in chunk:
+            lines.append(f'<{src}> <{dst.encode("utf-16-be").hex().upper()}>')
+        lines.append('endbfchar')
+    lines.extend(['endcmap', 'CMapName currentdict /CMap defineresource pop', 'end', 'end'])
+    return '\n'.join(lines)
+
 def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
     """
     Inspeciona o documento PDF em busca de:
     1. Fontes Type0 /Identity-H que não possuem a tabela /ToUnicode CMap.
     2. Fontes Type1 com dicionário /Encoding contendo vetor /Differences com glifos
        InDesign (/g<CID>) que foram omitidos ou truncados no /ToUnicode original.
+    3. Fontes simbólicas (Symbol, MT Extra) cujo /ToUnicode aponta para a área de uso privado.
     Injeta dinamicamente o CMap adequado e recarrega o documento em memória se modificado.
     """
     indesign_bytes = build_indesign_identity_h_cmap().encode('ascii')
@@ -341,10 +551,14 @@ def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
             if '/Type /Font' in obj or '/Type/Font' in obj:
                 # 1. Type0 / Identity-H sem ToUnicode
                 if ('/Identity-H' in obj or '/Type0' in obj) and '/ToUnicode' not in obj:
+                    bf = re.search(r'/BaseFont\s*/(\S+)', obj)
+                    style = font_style(bf.group(1)) if bf else ''
                     if 'Calibri' in obj:
                         cmap_bytes = calibri_bytes
                     elif 'Symbol' in obj:
                         cmap_bytes = symbol_bytes
+                    elif 'Arial' in style:
+                        cmap_bytes = build_indesign_identity_h_cmap(ARIAL_HIGH_GLYPHS.get(style), arial=True).encode('ascii')
                     else:
                         cmap_bytes = indesign_bytes
                     cmap_xref = doc.get_new_xref()
@@ -354,10 +568,27 @@ def repair_pdf_document_fonts(doc: pymupdf.Document) -> pymupdf.Document:
                     modified = True
 
                 # 2. Type1 com /Differences contendo glifos InDesign /g<CID>
+                differences_cmap = False
                 m = re.search(r'/Encoding\s+(\d+)\s+0\s+R', obj)
                 enc_str = doc.xref_object(int(m.group(1))) if m else obj
                 if '/Differences' in enc_str and '/g' in enc_str:
-                    cmap_str = build_tounicode_from_differences(enc_str)
+                    bf = re.search(r'/BaseFont\s*/(\S+)', obj)
+                    cmap_str = build_tounicode_from_differences(enc_str, bf.group(1) if bf else '')
+                    if cmap_str:
+                        cmap_bytes = cmap_str.encode('ascii')
+                        cmap_xref = doc.get_new_xref()
+                        doc.update_object(cmap_xref, f'<< /Length {len(cmap_bytes)} >>\nstream\n')
+                        doc.update_stream(cmap_xref, cmap_bytes)
+                        doc.xref_set_key(xref, 'ToUnicode', f'{cmap_xref} 0 R')
+                        modified = True
+                        differences_cmap = True
+
+                # 3. /ToUnicode original apontando para a área de uso privado (Symbol, MT Extra) ou para U+FFFD (Cambria Math)
+                tu = re.search(r'/ToUnicode\s+(\d+)\s+0\s+R', obj)
+                base_font = re.search(r'/BaseFont\s*/(\S+)', obj)
+                if tu and base_font and not differences_cmap and re.search(r'Symbol|MT-?Extra|CambriaMath', base_font.group(1)):
+                    cmap_str = remap_tounicode_private_use(doc.xref_stream(int(tu.group(1))).decode('latin1'),
+                                                           base_font.group(1))
                     if cmap_str:
                         cmap_bytes = cmap_str.encode('ascii')
                         cmap_xref = doc.get_new_xref()
@@ -462,6 +693,59 @@ def format_alternative_latex(alt: str) -> str:
             return f"${inner}$"
     return alt
 
+def wrap_inline_math(seg: str) -> str:
+    """
+    Envolve em $...$ variáveis indexadas e potências numéricas isoladas fora de fórmulas.
+    """
+    # Envolve variáveis indexadas isoladas: M_{1} -> $M_{1}$, E_{2} -> $E_{2}$, S_{1} -> $S_{1}$
+    seg = re.sub(r'(?<![\$\w])([A-Za-z]_[0-9A-Za-z]+|[A-Za-z]_\{[^}]+\})(?![\$\w])', r'$\1$', seg)
+    # Envolve potências numéricas isoladas: 10^{3} -> $10^{3}$
+    seg = re.sub(r'(?<![\$\w])(\d+(?:\^[0-9A-Za-z]+|\^\{[^}]+\}))(?![\$\w])', r'$\1$', seg)
+    return seg
+
+# Símbolos Unicode -> LaTeX para células de tabela. De SYMBOL_MAP entram só as chaves Unicode
+# (grego e operadores): as chaves ASCII/Latin-1 são códigos brutos da fonte Symbol e
+# corromperiam texto comum (ex.: 'Ç' -> \cap, 'Í' -> \supset).
+TABLE_CELL_MATH_MAP: Dict[str, str] = {
+    **{k: v for k, v in SYMBOL_MAP.items() if ord(k) >= 0x370},
+    **UNICODE_MATH_MAP,
+    '−': '-',
+}
+TABLE_CELL_MATH_REGEX = re.compile('|'.join(re.escape(k) for k in sorted(TABLE_CELL_MATH_MAP, key=len, reverse=True)))
+
+def format_table_cell(t: str) -> str:
+    """
+    Converte símbolos da célula para LaTeX, como no restante do texto. Célula que é uma
+    expressão (sem prosa) vai inteira para $...$; com prosa, só variáveis e potências isoladas.
+    """
+    # Comando seguido de letra ganha espaço (\pi r, e não \pir)
+    t = TABLE_CELL_MATH_REGEX.sub(
+        lambda m: TABLE_CELL_MATH_MAP[m.group(0)] + (' ' if TABLE_CELL_MATH_MAP[m.group(0)][-1].isalpha()
+                                                     and t[m.end():m.end() + 1].isalpha() else ''),
+        t
+    )
+    has_math = bool(re.search(r'\\[a-zA-Z]+|[\^_]\{?\w', t)) or (
+        bool(re.search(r'[<>=]', t)) and bool(re.search(r'(?<![\wÀ-ÿ])[A-Za-z](?![\wÀ-ÿ])', t))
+    )
+    has_prose = bool(re.search(r'[A-Za-zÀ-ÿ]{4,}', re.sub(r'\\[a-zA-Z]+', '', t)))
+    if has_math and '$' not in t and not has_prose and not re.search('[ªº]', t):
+        return f'${t}$'
+    return wrap_inline_math(t)
+
+def format_table_markdown(table: PageTable) -> str:
+    """
+    Converte uma tabela estruturada em Markdown (legenda opcional na primeira linha).
+    """
+    def cell(t: str) -> str:
+        return format_table_cell(t).replace('|', r'\|')
+
+    header, *body = table.rows
+    lines = [cell(table.caption)] if table.caption else []
+    lines.append('| ' + ' | '.join(cell(c) for c in header) + ' |')
+    lines.append('|' + '---|' * len(header))
+    lines += ['| ' + ' | '.join(cell(c) for c in r) + ' |' for r in body]
+    return '\n'.join(lines)
+
 def sanitize_question_text(t: str) -> str:
     """
     Remove códigos de barras, menções a rascunho e anos residuais colados no final do enunciado,
@@ -482,16 +766,10 @@ def sanitize_question_text(t: str) -> str:
     parts = t.split('$')
     if len(parts) > 1 and len(parts) % 2 == 1:
         for i in range(0, len(parts), 2):
-            seg = parts[i]
-            # Envolve variáveis indexadas isoladas: M_{1} -> $M_{1}$, E_{2} -> $E_{2}$, S_{1} -> $S_{1}$
-            seg = re.sub(r'(?<![\$\w])([A-Za-z]_[0-9A-Za-z]+|[A-Za-z]_\{[^}]+\})(?![\$\w])', r'$\1$', seg)
-            # Envolve potências numéricas isoladas: 10^{3} -> $10^{3}$
-            seg = re.sub(r'(?<![\$\w])(\d+(?:\^[0-9A-Za-z]+|\^\{[^}]+\}))(?![\$\w])', r'$\1$', seg)
-            parts[i] = seg
+            parts[i] = wrap_inline_math(parts[i])
         t = '$'.join(parts)
     else:
-        t = re.sub(r'(?<![\$\w])([A-Za-z]_[0-9A-Za-z]+|[A-Za-z]_\{[^}]+\})(?![\$\w])', r'$\1$', t)
-        t = re.sub(r'(?<![\$\w])(\d+(?:\^[0-9A-Za-z]+|\^\{[^}]+\}))(?![\$\w])', r'$\1$', t)
+        t = wrap_inline_math(t)
 
     # Converte funções matemáticas padrão para notação LaTeX apenas se não precedidas por barra invertida
     t = re.sub(r'(?<!\\)\b(log|ln|sen|cos|tg)\b', lambda m: f"\\{m.group(1)}", t)
@@ -606,13 +884,38 @@ def parse_question_body(q_text: str) -> Tuple[str, Dict[str, str]]:
                     c_text = format_alternative_latex(c_text)
                 alts[let] = c_text
             if all(k in alts for k in 'ABCDE'):
+                # Alternativas gráficas em subcolunas: se alguma é só figura, o texto das demais são
+                # rótulos de eixo dos gráficos (ex.: 'V (m^3) 0 15'), não o conteúdo da alternativa
+                if IMAGE_ALT_PLACEHOLDER in alts.values():
+                    alts = {let: IMAGE_ALT_PLACEHOLDER for let in 'ABCDE'}
                 return sanitize_question_text(enun), alts
 
     clean_enunciado = sanitize_question_text(q_text)
     return clean_enunciado, {}
 
 
-def is_vector_figure_drawing(d: dict) -> bool:
+# Limite inferior padrão da mancha de texto (cadernos de ~780 pt de altura); páginas mais altas
+# (A4, 826-842 pt, ex.: 2010 e 2014-2018) estendem o conteúdo até o rodapé localizado na página
+DEFAULT_CONTENT_BOTTOM = 737.0
+FOOTER_LINE_REGEX = re.compile(
+    r'P[ÁA]GINA\s*\d+|CADERNO\s*\d+|\b(?:CH|CN|LC|MT|RED)\s*[-–—|•]\s*[12]\s*[ºo°]?\s*DIA|[12]\s*[ºo°]\s*DIA\s*•',
+    re.IGNORECASE
+)
+
+def page_content_bottom(page: pymupdf.Page) -> float:
+    """
+    Coordenada vertical onde termina o conteúdo das questões: logo acima da linha de rodapé
+    ('MT - 2º dia | Caderno 7 - AZUL - Página 25'), nunca acima de DEFAULT_CONTENT_BOTTOM.
+    """
+    footer_y = [
+        l['bbox'][1]
+        for b in page.get_text('dict', clip=pymupdf.Rect(0, page.rect.height * 0.85, page.rect.width, page.rect.height))['blocks']
+        for l in b.get('lines', [])
+        if FOOTER_LINE_REGEX.search(''.join(s['text'] for s in l['spans']))
+    ]
+    return max(DEFAULT_CONTENT_BOTTOM, min(footer_y) - 1.0) if footer_y else DEFAULT_CONTENT_BOTTOM
+
+def is_vector_figure_drawing(d: dict, bottom: float = DEFAULT_CONTENT_BOTTOM) -> bool:
     """
     Determina se um objeto de desenho vetorial (fitz drawing) representa
     uma figura matemática, gráfico cartesiano ou diagrama geométrico.
@@ -626,7 +929,7 @@ def is_vector_figure_drawing(d: dict) -> bool:
     h = rect.y1 - rect.y0
 
     # Margens e cabeçalho/rodapé
-    if rect.y0 < 40 or rect.y1 > 745 or rect.x0 < 25 or rect.x1 > 570:
+    if rect.y0 < 40 or rect.y1 > max(745.0, bottom) or rect.x0 < 25 or rect.x1 > 570:
         return False
 
     # Bounding boxes excessivamente grandes (moldura da página ou colunas inteiras)
@@ -707,7 +1010,20 @@ def detect_page_column_rects(page: pymupdf.Page) -> List[pymupdf.Rect]:
             pymupdf.Rect(mid_x, 0, page.rect.width, page.rect.height)
         ]
 
-def is_vector_cluster_noise(d: dict) -> bool:
+def is_answer_mark_ring(d: dict) -> bool:
+    """
+    Anel de marcação do gabarito em volta da letra correta (cadernos com gabarito de 2010 a 2014):
+    elipse pequena só de contorno grosso colorido (verde ou verde-azulado), sem preenchimento.
+    Não é figura da questão.
+    """
+    rect = d.get('rect')
+    items = d.get('items', [])
+    color = d.get('color') or ()
+    return (bool(rect) and bool(items) and d.get('fill') is None and (d.get('width') or 0) >= 1.5
+            and 10.0 <= max(rect.width, rect.height) <= 20.0 and len(color) == 3 and max(color) - min(color) >= 0.3
+            and all(it[0] == 'c' for it in items))
+
+def is_vector_cluster_noise(d: dict, bottom: float = DEFAULT_CONTENT_BOTTOM) -> bool:
     """
     Identifica elementos gráficos que não compõem figuras geométricas/diagramas reais,
     como réguas divisórias, margens, barras de fração horizontais e linhas de tabelas.
@@ -718,7 +1034,7 @@ def is_vector_cluster_noise(d: dict) -> bool:
     w = rect.x1 - rect.x0
     h = rect.y1 - rect.y0
     # Margens e réguas de cabeçalho / rodapé / coluna
-    if rect.y0 < 40 or rect.y1 > 745 or rect.x0 < 25 or rect.x1 > 570:
+    if rect.y0 < 40 or rect.y1 > max(745.0, bottom) or rect.x0 < 25 or rect.x1 > 570:
         return True
     if w < 1.0 and h > 300:
         return True
@@ -741,22 +1057,28 @@ def is_vector_cluster_noise(d: dict) -> bool:
         return True
     return False
 
-def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: bool) -> Set[Tuple[int, Optional[float]]]:
+def detect_images_per_question(
+    doc: pymupdf.Document,
+    has_duplicate_languages: bool,
+    page_tables: Dict[int, List[PageTable]]
+) -> Set[Tuple[int, Optional[float]]]:
     """
     Identifica quais questões no documento PDF contêm imagens/figuras através de coordenadas espaciais,
     considerando tanto imagens raster (bitmap) quanto desenhos vetoriais (gráficos, geometrias, curvas).
+    Tabelas estruturadas com sucesso (e seus desenhos de grade) não contam como imagem.
     """
     q_regions = []
     seen_1 = 0
     current_q = None
     current_lang = None
+    bottoms = {p: max(745.0, page_content_bottom(doc[p])) for p in range(1, len(doc))}
 
     for page_num in range(1, len(doc)):
         page = doc[page_num]
         mid_x = page.rect.width / 2.0
         col_rects = detect_page_column_rects(page)
         is_single_col = (len(col_rects) == 1)
-        blocks = [b for b in page.get_text("blocks") if 40 < b[1] < 745]
+        blocks = [b for b in page.get_text("blocks") if 40 < b[1] < bottoms[page_num]]
 
         if is_single_col:
             columns = [sorted(blocks, key=lambda b: b[1])]
@@ -836,6 +1158,19 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
 
     questions_with_images = set()
 
+    # Elementos repetidos na mesma posição em várias páginas (logotipo do cabeçalho, barras,
+    # abas laterais) são decoração do caderno, não figuras de questão
+    def position_key(r) -> Tuple[int, int, int, int]:
+        return tuple(int(round(v / 2.0)) for v in (r[0], r[1], r[2], r[3]))
+
+    drawings_by_page = {p: doc[p].get_drawings() for p in range(1, len(doc))}
+    images_by_page = {p: doc[p].get_image_info() for p in range(1, len(doc))}
+    min_repeats = max(3, 0.3 * (len(doc) - 1))
+    drawing_counts = Counter(k for ds in drawings_by_page.values() for k in {position_key(d['rect']) for d in ds})
+    image_counts = Counter(k for imgs in images_by_page.values() for k in {position_key(i['bbox']) for i in imgs if i.get('bbox')})
+    decoration_drawings = {k for k, c in drawing_counts.items() if c >= min_repeats}
+    decoration_images = {k for k, c in image_counts.items() if c >= min_repeats}
+
     for page_num in range(1, len(doc)):
         page = doc[page_num]
         mid_x = page.rect.width / 2.0
@@ -844,16 +1179,16 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
         page_q_regions = [r for r in q_regions if r['page'] == page_num]
 
         # 1. Detecção de imagens raster (bitmap / fotos / escaneadas)
-        images = page.get_image_info()
+        images = images_by_page[page_num]
         for img in images:
             b = img.get('bbox')
-            if not b:
+            if not b or position_key(b) in decoration_images:
                 continue
             w = b[2] - b[0]
             h = b[3] - b[1]
 
             # Ignora faixas laterais de margem, linhas finas e elementos fora da mancha de texto
-            if w < 25 or h < 25 or b[0] > 550 or b[1] < 35 or b[3] > 745:
+            if w < 25 or h < 25 or b[0] > 550 or b[1] < 35 or b[3] > bottoms[page_num]:
                 continue
 
             img_x_mid = (b[0] + b[2]) / 2.0
@@ -866,29 +1201,33 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
                         questions_with_images.add((r['num'], r['lang']))
                         break
 
-        # 2. Detecção de tabelas estruturadas (page.find_tables())
-        try:
-            tabs = page.find_tables()
-            for tab in tabs.tables:
-                if tab.row_count >= 2 and tab.col_count >= 2:
-                    t_bbox = tab.bbox
-                    t_mid_x = (t_bbox[0] + t_bbox[2]) / 2.0
-                    t_col = 0 if (is_single_col or t_mid_x < mid_x) else 1
-                    t_mid_y = (t_bbox[1] + t_bbox[3]) / 2.0
-                    for r in page_q_regions:
-                        if r['is_single_col'] or r['col'] == t_col:
-                            if (r['y0'] - 15) <= t_mid_y <= (r['y1'] + 15):
-                                questions_with_images.add((r['num'], r['lang']))
-                                break
-        except Exception:
-            pass
+        # 2. Tabelas detectadas que não puderam ser estruturadas em texto são tratadas como imagem
+        tables = page_tables.get(page_num, [])
+        for tab in tables:
+            if tab.accepted:
+                continue
+            t_bbox = tab.bbox
+            t_mid_x = (t_bbox[0] + t_bbox[2]) / 2.0
+            t_col = 0 if (is_single_col or t_mid_x < mid_x) else 1
+            t_mid_y = (t_bbox[1] + t_bbox[3]) / 2.0
+            for r in page_q_regions:
+                if r['is_single_col'] or r['col'] == t_col:
+                    if (r['y0'] - 15) <= t_mid_y <= (r['y1'] + 15):
+                        questions_with_images.add((r['num'], r['lang']))
+                        break
 
         # 3. Detecção de figuras vetoriais (gráficos de funções, esquemas geométricos, polígonos, curvas)
-        page_drawings = page.get_drawings()
+        # Desenhos de grade e fundo das tabelas estruturadas não são figuras
+        accepted_rects = [t.bbox + (-2, -2, 2, 2) for t in tables if t.accepted]
+        page_drawings = [
+            d for d in drawings_by_page[page_num]
+            if position_key(d['rect']) not in decoration_drawings and not any(d['rect'] in r for r in accepted_rects)
+            and not is_answer_mark_ring(d)
+        ]
 
         # 3a. Checagem individual via is_vector_figure_drawing
         for drawing in page_drawings:
-            if not is_vector_figure_drawing(drawing):
+            if not is_vector_figure_drawing(drawing, bottoms[page_num]):
                 continue
             rect = drawing['rect']
             draw_x_mid = (rect.x0 + rect.x1) / 2.0
@@ -911,7 +1250,7 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
 
             q_drawings = []
             for d in page_drawings:
-                if is_vector_cluster_noise(d):
+                if is_vector_cluster_noise(d, bottoms[page_num]):
                     continue
                 rect = d['rect']
                 d_mid_x = (rect.x0 + rect.x1) / 2.0
@@ -929,7 +1268,8 @@ def detect_images_per_question(doc: pymupdf.Document, has_duplicate_languages: b
                 max_y = max(d['rect'].y1 for d in q_drawings)
                 span_w = max_x - min_x
                 span_h = max_y - min_y
-                if beziers >= 6 and span_w >= 25 and span_h >= 10:
+                # Curvas agrupadas, ou muitas formas pequenas (ex.: plateia de poltronas em retângulos, 2013)
+                if (beziers >= 6 and span_w >= 25 and span_h >= 10) or (len(q_drawings) >= 20 and span_w >= 50 and span_h >= 50):
                     questions_with_images.add((r['num'], r['lang']))
 
     return questions_with_images
@@ -959,23 +1299,37 @@ def format_span_tokens(spans_list: List[Dict[str, Any]]) -> str:
     res = re.sub(r'_\{([^}]+)\}_\{([^}]+)\}', r'_{\1\2}', res)
     return res
 
-def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str:
+def extract_column_math_text(
+    page: pymupdf.Page,
+    clip_rect: pymupdf.Rect,
+    tables: Optional[List[PageTable]] = None,
+    bottom: float = DEFAULT_CONTENT_BOTTOM
+) -> str:
     """
     Extrai o conteúdo textual de uma coluna ou região da página reconstruindo
     fórmulas matemáticas em LaTeX bidimensionalmente (frações, raízes, potências, matrizes).
+    O texto de tabelas estruturadas é substituído por um marcador TABLE_PLACEHOLDER na posição da tabela.
     """
+    tables = tables or []
     dict_data = page.get_text("dict", clip=clip_rect)
     spans = []
     for b in dict_data.get("blocks", []):
         if "lines" in b:
             for l in b["lines"]:
                 for s in l["spans"]:
-                    t = s["text"]
+                    t = s["text"].replace(HAIR_SPACE, '')
                     # Ignora spans contendo apenas espaços em branco
                     if not t or not t.strip():
                         continue
+                    t = MATH_ALNUM_REGEX.sub(lambda m: unicodedata.normalize('NFKC', m.group(1)), t)
+                    # A Cambria Math declara ascendente/descendente enormes (caixa de ~5,6 vezes o corpo):
+                    # a caixa vertical é refeita pela linha de base, senão o sinal (−, ×, π) cai no
+                    # filtro de divisores verticais abaixo
+                    if 'Cambria' in s["font"] and (s["bbox"][3] - s["bbox"][1]) > 2.5 * s["size"]:
+                        base_y = s["origin"][1]
+                        s["bbox"] = (s["bbox"][0], base_y - 0.8 * s["size"], s["bbox"][2], base_y + 0.25 * s["size"])
                     # Filtra cabeçalhos e rodapés de página por coordenadas verticais
-                    if s["bbox"][3] <= 45.0 or s["bbox"][1] >= 737.0:
+                    if s["bbox"][3] <= 45.0 or s["bbox"][1] >= bottom:
                         continue
                     # Filtra marcas d'água e divisores verticais de coluna
                     if re.search(r'(ENEM\s*20[0-9A-Z]{2}\s*){2,}', t, re.IGNORECASE) or (s["bbox"][3] - s["bbox"][1]) > 50.0:
@@ -986,6 +1340,10 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
                     is_lb = "Symbol" in font and (any(c in t for c in '\x1b\x1c\x1d') or any(ord(c) in (27, 28, 29) for c in t))
                     is_rb = "Symbol" in font and (any(c in t for c in '\x18\x19\x1a') or any(ord(c) in (24, 25, 26) for c in t))
                     if "Symbol" in font:
+                        # Fonte Symbol sem /ToUnicode cujo nome de glifo cai na área privada
+                        # (U+F000 + código, ou peças de delimitadores da Adobe como 'bracketlefttp')
+                        t = ''.join(remap_private_use(ord(ch), font) or ch if 0xE000 <= ord(ch) <= 0xF8FF else ch
+                                    for ch in t)
                         mapped = []
                         for ch in t:
                             o = ord(ch)
@@ -1032,20 +1390,57 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
                         "is_math": "Symbol" in font or any(c in t for c in [r'\pi', r'\cdot', r'\times', r'\le', r'\infty', '^', '_'])
                     })
 
+    # Tabelas estruturadas: seu texto sai do fluxo e um marcador ocupa a posição da tabela
+    composite_elements = []
+    for t_idx, tab in enumerate(tables):
+        if not tab.accepted:
+            continue
+        for s in spans:
+            cx = (s['bbox'][0] + s['bbox'][2]) / 2.0
+            cy = (s['bbox'][1] + s['bbox'][3]) / 2.0
+            if tab.bbox.contains(pymupdf.Point(cx, cy)):
+                s["used"] = True
+        t_center = pymupdf.Point((tab.bbox.x0 + tab.bbox.x1) / 2.0, (tab.bbox.y0 + tab.bbox.y1) / 2.0)
+        if clip_rect.contains(t_center):
+            composite_elements.append({
+                "text": TABLE_PLACEHOLDER.format(page.number, t_idx),
+                "bbox": list(tab.bbox),
+                "origin": [tab.bbox.x0, tab.bbox.y1],
+                "size": 10.0,
+                "is_math": False
+            })
+
     # Coleta desenhos vetoriais na coluna (linhas horizontais de frações e radicais)
     hlines = []
     radicals = []
     for d in page.get_drawings():
         r = d['rect']
-        if r.y0 < 40 or r.y1 > 737 or r.x1 < clip_rect.x0 or r.x0 > clip_rect.x1:
+        if r.y0 < 40 or r.y1 > bottom or r.x1 < clip_rect.x0 or r.x0 > clip_rect.x1:
             continue
         items = d.get('items', [])
         lines = [it for it in items if it[0] == 'l']
         if len(lines) >= 4 and 8.0 <= (r.x1 - r.x0) <= 120.0 and 6.0 <= (r.y1 - r.y0) <= 35.0:
             horiz_top = [l for l in lines if abs(l[1].y - l[2].y) < 1.0 and abs(l[1].y - r.y0) < 3.0]
-            if horiz_top:
-                radicals.append((r, horiz_top[0]))
+            # A barra do radical é a união dos segmentos horizontais do topo: no glifo √ preenchido
+            # (contorno, ex.: 2021) o primeiro segmento é só um trecho de borda de ~1 pt
+            xs = [p.x for l in horiz_top for p in (l[1], l[2])]
+            # Haste do √: sobe para a direita, da base do desenho até a ponta esquerda da barra, com o
+            # gancho à esquerda da base (descarta molduras, faces de polígonos e polilinhas de gráficos)
+            def is_radical_stem(l) -> bool:
+                top, foot = sorted((l[1], l[2]), key=lambda p: p.y)
+                return (top.x - foot.x >= 1.0 and top.y <= r.y0 + 3.0 and foot.y >= r.y1 - 2.0
+                        and abs(top.x - min(xs)) <= 2.0 and foot.x - r.x0 >= 1.0)
+
+            if horiz_top and any(is_radical_stem(l) for l in lines):
+                radicals.append((r, min(xs), max(xs)))
                 continue
+
+        # Barra de fração desenhada como retângulo fino preenchido em contorno de segmentos
+        # parciais (ex.: 2021): vira uma única barra com a largura total do desenho
+        if lines and len(lines) == len(items) and d.get('fill') is not None and (r.y1 - r.y0) < 1.5:
+            if 2.0 <= (r.x1 - r.x0) <= 80.0 and clip_rect.x0 - 5 <= r.x0 and r.x1 <= clip_rect.x1 + 5:
+                hlines.append((r.x0, (r.y0 + r.y1) / 2.0, r.x1, (r.y0 + r.y1) / 2.0))
+            continue
 
         for it in items:
             if it[0] == 'l':
@@ -1055,13 +1450,8 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
                     if 2.0 <= (x1 - x0) <= 80.0 and clip_rect.x0 - 5 <= x0 and x1 <= clip_rect.x1 + 5:
                         hlines.append((x0, (p1.y + p2.y) / 2.0, x1, (p1.y + p2.y) / 2.0))
 
-    composite_elements = []
-
     # 1. Reconstrução de Radicais (\sqrt{...} ou \sqrt[n]{...})
-    for r, h_line in radicals:
-        rx0 = min(h_line[1].x, h_line[2].x)
-        rx1 = max(h_line[1].x, h_line[2].x)
-
+    for r, rx0, rx1 in radicals:
         # Detecta índice/grau do radical (pequeno texto localizado junto ao gancho inicial r.x0, r.y0)
         deg_spans = [
             s for s in spans if not s["used"]
@@ -1092,20 +1482,14 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
             composite_elements.append({
                 "text": latex_rad,
                 "bbox": [r.x0, r.y0, max(r.x1, rad_spans[-1]['bbox'][2]), max(r.y1, rad_spans[-1]['bbox'][3])],
-                "origin": [r.x0, r.y1],
+                # Linha de base do radicando (a ponta do glifo √ desce abaixo dela)
+                "origin": [r.x0, max(rad_spans, key=lambda s: s['size'])['origin'][1]],
                 "size": max(s["size"] for s in rad_spans),
                 "is_math": True
             })
 
-    # Detecta caixas delimitadoras de tabelas para proteger suas linhas internas de virarem frações
-    tab_rects = []
-    try:
-        tabs = page.find_tables()
-        for t in tabs.tables:
-            if t.row_count >= 2 and t.col_count >= 2:
-                tab_rects.append(pymupdf.Rect(t.bbox))
-    except Exception:
-        pass
+    # Caixas delimitadoras de tabelas protegem suas linhas internas de virarem frações
+    tab_rects = [t.bbox for t in tables]
 
     # 2. Reconstrução de Frações (\frac{num}{den})
     for x0, y, x1, _ in sorted(hlines, key=lambda h: (h[1], h[0])):
@@ -1136,6 +1520,11 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
 
         all_num = num_spans + num_comp
         all_den = den_spans + den_comp
+
+        # Ordinais ª/º desenhados como letra sobrescrita + traço curto: o traço não é barra de fração
+        if (x1 - x0) <= 6.0 and not num_comp and len(num_spans) == 1 \
+                and num_spans[0]['text'].strip() in ('a', 'o') and num_spans[0]['size'] < 7.5:
+            continue
 
         if all_num and all_den:
             all_num.sort(key=lambda item: item['bbox'][0])
@@ -1262,8 +1651,11 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
     for line_dict in lines:
         line = line_dict["items"]
         line.sort(key=lambda item: item["bbox"][0])
-        base_size = max(item["size"] for item in line)
-        base_items_in_line = [item for item in line if item["size"] >= base_size * 0.85]
+        # Tamanho e linha de base de referência vêm do texto comum da linha: elementos compostos
+        # (frações, radicais) e sinais avulsos (vírgula ampliada, glifos de controle) os distorcem
+        text_items = [item for item in line if "font" in item and re.search(r'\w', item["text"])] or line
+        base_size = max(item["size"] for item in text_items)
+        base_items_in_line = [item for item in text_items if item["size"] >= base_size * 0.85]
         base_orig_y = base_items_in_line[0]["origin"][1] if base_items_in_line else line[0]["origin"][1]
 
         line_tokens = []
@@ -1273,7 +1665,11 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
                 if item["origin"][1] > base_orig_y + 1.2:
                     t = f"_{{{t}}}"
                 elif item["origin"][1] < base_orig_y - 1.2 or (item.get("is_math") and item["bbox"][3] <= base_orig_y):
-                    t = f"^{{{t}}}"
+                    # Ordinal sobrescrito após número (1ª, 2º)
+                    if t.strip() in ('a', 'o') and line_tokens and line_tokens[-1][0].rstrip()[-1:].isdigit():
+                        t = 'ª' if t.strip() == 'a' else 'º'
+                    else:
+                        t = f"^{{{t}}}"
             line_tokens.append((t, item))
 
         res_str = ""
@@ -1281,7 +1677,7 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
         for t, item in line_tokens:
             if prev_item:
                 gap = item["bbox"][0] - prev_item["bbox"][2]
-                if gap > 1.8 and not res_str.endswith(" ") and not t.startswith((" ", "^", "_")):
+                if gap > 1.8 and not res_str.endswith(" ") and not t.startswith((" ", "^", "_", "ª", "º")):
                     res_str += " "
             res_str += t
             prev_item = item
@@ -1319,15 +1715,16 @@ def extract_column_math_text(page: pymupdf.Page, clip_rect: pymupdf.Rect) -> str
     return "\n".join(l for l in formatted_lines if l)
 
 
-def extract_page_column_text(page: pymupdf.Page) -> str:
+def extract_page_column_text(page: pymupdf.Page, tables: Optional[List[PageTable]] = None) -> str:
     """
     Extrai o texto da página respeitando a geometria das colunas e reconstruindo
     fórmulas matemáticas em formato LaTeX padronizado.
     """
     column_rects = detect_page_column_rects(page)
+    bottom = page_content_bottom(page)
     col_texts = []
     for rect in column_rects:
-        raw_col = extract_column_math_text(page, rect)
+        raw_col = extract_column_math_text(page, rect, tables, bottom)
         col_texts.append(clean_page_text(raw_col))
     return "\n".join(col_texts)
 
@@ -1402,6 +1799,18 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
     doc = pymupdf.open(pdf_path)
     doc = repair_pdf_document_fonts(doc)
 
+    # Detecta e estrutura as tabelas uma única vez por página
+    page_tables: Dict[int, List[PageTable]] = {p: extract_page_tables(doc[p]) for p in range(1, len(doc))}
+    tables_markdown: Dict[Tuple[int, int], str] = {
+        (p, i): format_table_markdown(t)
+        for p, tabs in page_tables.items() for i, t in enumerate(tabs) if t.accepted
+    }
+
+    def insert_tables(text: str) -> str:
+        return TABLE_PLACEHOLDER_REGEX.sub(
+            lambda m: '\n' + tables_markdown[(int(m.group(1)), int(m.group(2)))] + '\n', text
+        ).strip()
+
     # Extrai e limpa o texto das páginas respeitando as duas colunas
     pages_text = []
     for p in range(1, len(doc)):
@@ -1416,7 +1825,7 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
             # Descarta contracapa de fechamento na última página do caderno
             if p == len(doc) - 1:
                 continue
-        pages_text.append(extract_page_column_text(page))
+        pages_text.append(extract_page_column_text(page, page_tables.get(p)))
     full_text = "\n".join(pages_text)
 
     # Detecta previamente alternativas representadas por desenhos vetoriais (ex: 2010 Regular)
@@ -1428,7 +1837,7 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
     has_duplicate_languages = (q1_count >= 2 and q2_count >= 2)
 
     # Detecta imagens nas questões
-    questions_with_spatial_images = detect_images_per_question(doc, has_duplicate_languages)
+    questions_with_spatial_images = detect_images_per_question(doc, has_duplicate_languages, page_tables)
 
     splits = QUESTION_SPLIT_REGEX.split(full_text)
     parsed_questions: Dict[Tuple[int, Optional[float]], Dict[str, Any]] = {}
@@ -1468,20 +1877,25 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
             # Limpa possíveis resíduos de letras de alternativas no fim do enunciado
             enunciado = re.sub(r'(?:[\s\n]*[A-E]\b[\s\n]*){3,10}(?:2ª\s*aplicação)?\s*$', '', enunciado, flags=re.I).strip()
             enunciado = sanitize_question_text(enunciado)
-        has_explicit_ref = bool(EXPLICIT_IMAGE_REGEX.search(enunciado))
+        has_table = any(TABLE_PLACEHOLDER_REGEX.search(t) for t in [enunciado] + list(alts.values()))
+        # Referência a tabela/quadro só indica imagem quando nenhuma tabela da questão foi estruturada
+        has_explicit_ref = bool(EXPLICIT_IMAGE_REGEX.search(enunciado)) or (
+            bool(EXPLICIT_TABLE_REGEX.search(enunciado)) and not has_table
+        )
         has_image = 1 if (has_img_in_alts or has_spatial_img or has_explicit_ref) else 0
 
         key = (q_num, lang)
         parsed_questions[key] = {
             'CO_POSICAO': q_num,
             'TP_LINGUA': lang,
-            'DESC_ENUNCIADO': enunciado,
-            'DESC_ALTER_A': alts.get('A', ''),
-            'DESC_ALTER_B': alts.get('B', ''),
-            'DESC_ALTER_C': alts.get('C', ''),
-            'DESC_ALTER_D': alts.get('D', ''),
-            'DESC_ALTER_E': alts.get('E', ''),
+            'DESC_ENUNCIADO': insert_tables(enunciado),
+            'DESC_ALTER_A': insert_tables(alts.get('A', '')),
+            'DESC_ALTER_B': insert_tables(alts.get('B', '')),
+            'DESC_ALTER_C': insert_tables(alts.get('C', '')),
+            'DESC_ALTER_D': insert_tables(alts.get('D', '')),
+            'DESC_ALTER_E': insert_tables(alts.get('E', '')),
             'IN_ITEM_IMAGEM': has_image,
+            'IN_ITEM_TABELA': 1 if has_table else 0,
             'REF_ARQUIVO_PDF': pdf_path.name
         }
 

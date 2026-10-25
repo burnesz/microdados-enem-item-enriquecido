@@ -218,6 +218,7 @@ def run_enem_pipeline(
         alt_d_list = []
         alt_e_list = []
         tem_imagem_list = []
+        tem_tabela_list = []
 
         matches_count = 0
         has_tp_lingua = ('TP_LINGUA' in df_reg.columns)
@@ -263,6 +264,7 @@ def run_enem_pipeline(
                 alt_d_list.append(q_info['DESC_ALTER_D'])
                 alt_e_list.append(q_info['DESC_ALTER_E'])
                 tem_imagem_list.append(q_info['IN_ITEM_IMAGEM'])
+                tem_tabela_list.append(q_info['IN_ITEM_TABELA'])
             else:
                 enunciado_list.append("")
                 alt_a_list.append("")
@@ -271,6 +273,7 @@ def run_enem_pipeline(
                 alt_d_list.append("")
                 alt_e_list.append("")
                 tem_imagem_list.append(0)
+                tem_tabela_list.append(0)
 
         df_reg['ANO_APLICACAO'] = int(year)
         df_reg['TP_APLICACAO'] = tp_aplicacao_list
@@ -282,6 +285,7 @@ def run_enem_pipeline(
         df_reg['DESC_ALTER_D'] = alt_d_list
         df_reg['DESC_ALTER_E'] = alt_e_list
         df_reg['IN_ITEM_IMAGEM'] = tem_imagem_list
+        df_reg['IN_ITEM_TABELA'] = tem_tabela_list
 
         pct = (matches_count / len(df_reg) * 100.0) if len(df_reg) > 0 else 0.0
         area_summaries.append({
@@ -412,6 +416,7 @@ def consolidate_all_years(
     reg_items = (df_consolidated['TP_APLICACAO'] == 'REGULAR').sum() if 'TP_APLICACAO' in df_consolidated.columns else 0
     ppl_items = (df_consolidated['TP_APLICACAO'] == 'REAPLICACAO_PPL').sum() if 'TP_APLICACAO' in df_consolidated.columns else 0
     img_items = df_consolidated['IN_ITEM_IMAGEM'].sum() if 'IN_ITEM_IMAGEM' in df_consolidated.columns else 0
+    tab_items = df_consolidated['IN_ITEM_TABELA'].sum() if 'IN_ITEM_TABELA' in df_consolidated.columns else 0
 
     print(f"\n========================================================")
     print(f" CONSOLIDAÇÃO CONCLUÍDA COM SUCESSO!")
@@ -422,6 +427,7 @@ def consolidate_all_years(
     print(f" Itens Prova Regular (P1):   {reg_items}")
     print(f" Itens Reaplicação/PPL (P2): {ppl_items}")
     print(f" Itens com figuras/imagens:  {int(img_items)}")
+    print(f" Itens com tabelas em texto: {int(tab_items)}")
     print(f" Arquivo gerado:             {out_file}")
     print(f"========================================================\n")
 

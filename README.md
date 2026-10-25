@@ -102,6 +102,7 @@ microdados-enem-item-enriquecido/
 │   ├── pdf_matcher.py                    # Seleção unária e casamento dinâmico multi-área
 │   ├── organize.py                       # Desaninhamento e padronização automática de pastas
 │   ├── pdf_extractor.py                  # Extração textual, alternativas A-E e imagens
+│   ├── table_extractor.py                # Estruturação de tabelas em Markdown com controle de qualidade
 │   ├── pipeline.py                       # Orquestrador com cache compartilhado de cadernos
 │   └── dictionary_parser.py              # Leitor dinâmico de códigos de prova no Excel
 │
@@ -207,5 +208,8 @@ O dataset gerado em `processed/` utiliza codificação `utf-8-sig` (UTF-8 com BO
 | `DESC_ALTER_D` | `str` | Texto integral da alternativa D. |
 | `DESC_ALTER_E` | `str` | Texto integral da alternativa E. |
 | `IN_ITEM_IMAGEM`| `int` | Indicador binário: `1` se há imagem, figura ou gráfico no item; `0` se é puramente textual. |
+| `IN_ITEM_TABELA`| `int` | Indicador binário: `1` se o item contém tabela estruturada em texto (Markdown) no enunciado ou nas alternativas. |
+
+> **Nota sobre Tabelas:** Tabelas que passam no controle de qualidade de `src/table_extractor.py` são inseridas no próprio texto (`DESC_ENUNCIADO` ou alternativas) em formato Markdown, com a legenda (quando houver) na linha anterior, e não contam como imagem. Símbolos matemáticos nas células usam a mesma notação LaTeX do restante do texto (ex.: `$0 < \sigma \le 2$`). Tabelas que não podem ser estruturadas com segurança (células mescladas, gráficos com grade, diagramas) permanecem como texto corrido e marcam `IN_ITEM_IMAGEM = 1`.
 
 > **Nota sobre Alternativas Gráficas:** Alternativas cujo conteúdo é estritamente visual (figura geométrica, mapa, charge ou diagrama sem texto legível) recebem a marcação padronizada `[Figura / Imagem]`.
