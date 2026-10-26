@@ -27,6 +27,10 @@ from src.table_extractor import PageTable, extract_page_tables
 
 # Marcador provisório de tabela estruturada no fluxo de texto (página.índice), substituído pelo Markdown
 TABLE_PLACEHOLDER = '⟦TABELA:{}.{}⟧'
+# Cifrão literal ('caracteres especiais !, @, #, $'): marcador durante a montagem, '\$' na saída.
+# Símbolos de moeda (R$, US$, U$) seguem como estão.
+LITERAL_DOLLAR_PLACEHOLDER = '\ue002'
+LITERAL_DOLLAR_REGEX = re.compile(r'(?<!\bR)(?<!\bU)(?<!\bUS)\$')
 TABLE_PLACEHOLDER_REGEX = re.compile(r'\s*⟦TABELA:(\d+)\.(\d+)⟧\s*')
 
 # Ordem de glifos das fontes Arial (TrueType): a ordem padrão do Macintosh (índices 0-257 da tabela
@@ -688,20 +692,105 @@ def format_alternative_latex(alt: str) -> str:
     ]
     if any(sym in alt for sym in math_symbols):
         if '$' not in alt:
+            # Alternativa em prosa com fórmula ('tipo I, pois p_{1} < p_{2} < p_{3}.'): só a fórmula vai para $...$
+            if has_prose(alt):
+                return wrap_math_in_prose(alt)
             has_trailing_dot = alt.endswith('.') and not alt.endswith('..')
             inner = alt[:-1].strip() if has_trailing_dot else alt
             return f"${inner}$"
     return alt
 
+# Comando LaTeX com seus argumentos ({...} e [...] com até dois níveis de chaves aninhadas)
+LATEX_BRACE_GROUP = r'\{[^{}]*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}[^{}]*)*\}'
+LATEX_COMMAND_WITH_ARGS_REGEX = re.compile(r'\\[a-zA-Z]+(?:\s*(?:\[[^\]]*\]|' + LATEX_BRACE_GROUP + r'))+')
+
+
+MATH_FUNCTION_WORDS = {'log', 'sen', 'cos', 'tg', 'rad', 'det', 'max', 'min', 'lim', 'mod'}
+
+# Comandos que a extração emite: dos mapas de símbolos, da reconstrução 2D e das funções
+KNOWN_LATEX_COMMANDS = sorted(
+    {c for v in list(SYMBOL_MAP.values()) + list(UNICODE_MATH_MAP.values()) for c in re.findall(r'\\([a-zA-Z]+)', v)}
+    | {'frac', 'sqrt', 'left', 'right', 'begin', 'end', 'log', 'ln', 'sen', 'cos', 'tg', 'pi', 'cdot', 'times',
+       'le', 'ge', 'leq', 'geq', 'neq', 'ldots', 'infty', 'varnothing', 'bullet'},
+    key=len, reverse=True
+)
+
+
+def separate_glued_commands(t: str) -> str:
+    """
+    Símbolo da fonte Symbol vira comando LaTeX colado ao span seguinte: '\\pih', '\\circC',
+    '\\cdotm', '\\timescos'. Comando desconhecido que começa por um conhecido é separado no
+    prefixo mais longo ('\\pi h'); comandos válidos ('\\left', '\\frac') ficam intactos.
+    """
+    def split(m: re.Match) -> str:
+        word = m.group(1)
+        if word in KNOWN_LATEX_COMMANDS:
+            return m.group(0)
+        prefix = next((c for c in KNOWN_LATEX_COMMANDS if word.startswith(c)), None)
+        return f'\\{prefix} {word[len(prefix):]}' if prefix else m.group(0)
+
+    return re.sub(r'\\([a-zA-Z]+)', split, t)
+
+
+def has_prose(t: str) -> bool:
+    """
+    Há texto corrido fora das fórmulas: uma palavra de 4+ letras ou duas de 3+ letras, sem contar
+    argumentos de comandos LaTeX, índices/expoentes e nomes de função. 'O valor de \\frac{A}{B} é'
+    é prosa; 'IMC = \\frac{massa}{altura}' não.
+    """
+    clean = LATEX_COMMAND_WITH_ARGS_REGEX.sub(' ', t)
+    clean = re.sub(r'[_^]\{[^{}]*\}|\\[a-zA-Z]+', ' ', clean)
+    words = [w for w in re.findall(r'[A-Za-zÀ-ÿ]{3,}', clean) if w.lower() not in MATH_FUNCTION_WORDS]
+    return any(len(w) >= 4 for w in words) or len(words) >= 2
+
+
+def wrap_math_in_prose(t: str) -> str:
+    """Numa linha de prosa, envolve em $...$ só as fórmulas (frações, radicais, matrizes, variáveis indexadas)."""
+    # Uma passada só: a fórmula mais externa leva o $ ('\\frac{\\sqrt{3}}{3}' não ganha $ por dentro).
+    # Expoente/índice com comando ('k.m^{\\frac{2}{3}}') entra inteiro com a base.
+    formula = re.compile(r'(?P<scripted>[A-Za-z0-9.)\]]*[\^_]' + LATEX_BRACE_GROUP + ')'
+                         + r'|(?:\d+\s+)?\\frac' + LATEX_BRACE_GROUP + LATEX_BRACE_GROUP
+                         + r'|\\sqrt(?:\[[^\]]+\])?' + LATEX_BRACE_GROUP
+                         + r'|\\begin\{pmatrix\}.*?\\end\{pmatrix\}')
+
+    def wrap(m: re.Match) -> str:
+        if m.group('scripted') and '\\' not in m.group(0):
+            return m.group(0)
+        return f'${m.group(0).strip()}$' if m.group(0)[:1].strip() else f' ${m.group(0).strip()}$'
+
+    parts = t.split('$')
+    for i in range(0, len(parts), 2):
+        parts[i] = formula.sub(wrap, parts[i])
+    t = '$'.join(parts)
+    parts = t.split('$')
+    for i in range(0, len(parts), 2):
+        parts[i] = wrap_inline_math(parts[i])
+    return '$'.join(parts)
+
+
 def wrap_inline_math(seg: str) -> str:
     """
     Envolve em $...$ variáveis indexadas e potências numéricas isoladas fora de fórmulas.
+    Argumentos de comandos LaTeX (\\frac{m_{1}m_{2}}{d^{2}}) ficam intactos: um $ dentro deles
+    quebraria a fórmula.
     """
-    # Envolve variáveis indexadas isoladas: M_{1} -> $M_{1}$, E_{2} -> $E_{2}$, S_{1} -> $S_{1}$
-    seg = re.sub(r'(?<![\$\w])([A-Za-z]_[0-9A-Za-z]+|[A-Za-z]_\{[^}]+\})(?![\$\w])', r'$\1$', seg)
+    protected: List[str] = []
+
+    def protect(m: re.Match) -> str:
+        protected.append(m.group(0))
+        return f'\ue000{len(protected) - 1}\ue001'
+
+    seg = LATEX_COMMAND_WITH_ARGS_REGEX.sub(protect, seg)
+    # Variáveis indexadas, isoladas, em sequência ou encadeadas por relação:
+    # M_{1} -> $M_{1}$, A_{1}B_{1} -> $A_{1}B_{1}$, p_{1} < p_{2} < p_{3} -> $p_{1} < p_{2} < p_{3}$
+    var = r'(?:[A-Za-z]_[0-9A-Za-z]+|[A-Za-z]_\{[^}]+\})+'
+    rel = r'\s*(?:<|>|=|\\le|\\ge|\\leq|\\geq|\\ne)\s*'
+    seg = re.sub(r'(?<![\$\w])(' + var + r'(?:' + rel + var + r')*)(?![\$\w])', r'$\1$', seg)
     # Envolve potências numéricas isoladas: 10^{3} -> $10^{3}$
     seg = re.sub(r'(?<![\$\w])(\d+(?:\^[0-9A-Za-z]+|\^\{[^}]+\}))(?![\$\w])', r'$\1$', seg)
-    return seg
+    # Unidades e variáveis curtas com expoente: 100 m^{2} -> 100 $m^{2}$
+    seg = re.sub(r'(?<![\$\w\\}])([A-Za-z]{1,3}\^(?:[0-9]|\{[^}]+\}))(?![\$\w])', r'$\1$', seg)
+    return re.sub(r'\ue000(\d+)\ue001', lambda m: protected[int(m.group(1))], seg)
 
 # Símbolos Unicode -> LaTeX para células de tabela. De SYMBOL_MAP entram só as chaves Unicode
 # (grego e operadores): as chaves ASCII/Latin-1 são códigos brutos da fonte Symbol e
@@ -948,6 +1037,12 @@ def is_vector_figure_drawing(d: dict, bottom: float = DEFAULT_CONTENT_BOTTOM) ->
     if not items:
         return False
 
+    # 0. Traço tracejado (linhas de chamada de gráficos, ex.: 2018, Q151): tabelas e molduras usam traço contínuo
+    # Pontilhados horizontais da largura da coluna são separadores do caderno (2019), não figura
+    dashes = (d.get('dashes') or '').strip()
+    if dashes and not dashes.startswith('[]') and max(w, h) >= 10 and not (h < 1.0 and w >= 220):
+        return True
+
     # 1. Curvas de Bézier cúbicas (gráficos de funções, círculos, elipses, arcos)
     for item in items:
         cmd = item[0]
@@ -1057,6 +1152,43 @@ def is_vector_cluster_noise(d: dict, bottom: float = DEFAULT_CONTENT_BOTTOM) -> 
         return True
     return False
 
+def is_outlined_glyph(d: dict) -> bool:
+    """Glifo de texto convertido em contorno: forma preenchida do tamanho de um algarismo/letra."""
+    rect = d.get('rect')
+    return (bool(rect) and d.get('fill') is not None and len(d.get('items', [])) >= 4
+            and 3.5 <= rect.height <= 10.0 and 0.8 <= rect.width <= 9.0)
+
+
+def has_outlined_text_run(drawings: List[dict], min_glyphs: int = 3) -> bool:
+    """
+    Há uma palavra/número em contorno: ao menos `min_glyphs` glifos na mesma linha de base,
+    quase encostados (as bolinhas das alternativas ficam empilhadas, não lado a lado).
+    """
+    glyphs = sorted((d['rect'] for d in drawings if is_outlined_glyph(d)), key=lambda r: (round(r.y1), r.x0))
+    for start in glyphs:
+        run = [start]
+        for r in glyphs:
+            if r.x0 > run[-1].x0 and abs(r.y1 - start.y1) <= 1.2 and 0.0 <= r.x0 - run[-1].x1 <= 3.0:
+                run.append(r)
+        if len(run) >= min_glyphs:
+            return True
+    return False
+
+
+def has_display_typography(spans: List[dict], ratio: float = 2.2) -> bool:
+    """
+    Palavras em corpo muito maior que o do texto da questão (mais de `ratio` vezes a mediana, pesada
+    pelo número de caracteres): o tamanho é parte do conteúdo, como numa nuvem de palavras.
+    """
+    # Microtexto (marca d'água de 1,8 pt nas laterais) não entra na referência
+    spans = [sp for sp in spans if sp["size"] >= 5.0]
+    sizes = sorted(sp["size"] for sp in spans for _ in sp["text"].strip())
+    if not sizes:
+        return False
+    body = sizes[len(sizes) // 2]
+    return any(sp["size"] >= ratio * body and re.search(r'[A-Za-zÀ-ÿ]{2,}', sp["text"]) for sp in spans)
+
+
 def detect_images_per_question(
     doc: pymupdf.Document,
     has_duplicate_languages: bool,
@@ -1164,6 +1296,12 @@ def detect_images_per_question(
         return tuple(int(round(v / 2.0)) for v in (r[0], r[1], r[2], r[3]))
 
     drawings_by_page = {p: doc[p].get_drawings() for p in range(1, len(doc))}
+    # Só texto horizontal: marcas diagonais ('RASCUNHO DA REDAÇÃO') não são tipografia da questão
+    spans_by_page = {
+        p: [sp for b in doc[p].get_text("dict").get("blocks", []) for l in b.get("lines", [])
+            if abs(l["dir"][1]) < 0.01 for sp in l["spans"] if sp["text"].strip()]
+        for p in range(1, len(doc))
+    }
     images_by_page = {p: doc[p].get_image_info() for p in range(1, len(doc))}
     min_repeats = max(3, 0.3 * (len(doc) - 1))
     drawing_counts = Counter(k for ds in drawings_by_page.values() for k in {position_key(d['rect']) for d in ds})
@@ -1260,6 +1398,23 @@ def detect_images_per_question(
                 if (r['is_single_col'] or d_col == q_col) and (body_y0 <= d_mid_y <= r['y1'] + 10):
                     q_drawings.append(d)
 
+            # Texto convertido em contorno (ex.: frações das alternativas de 2011 P2, Q159): não há texto
+            # para extrair, só a imagem dos números
+            if has_outlined_text_run(q_drawings):
+                questions_with_images.add((r['num'], r['lang']))
+                continue
+
+            # Tipografia como conteúdo (nuvem de palavras, 2018 P2, Q138): o tamanho da letra carrega a
+            # informação e se perde na transcrição
+            q_spans = [
+                sp for sp in spans_by_page[page_num]
+                if (r['is_single_col'] or (0 if (sp['bbox'][0] + sp['bbox'][2]) / 2.0 < mid_x else 1) == q_col)
+                and body_y0 <= (sp['bbox'][1] + sp['bbox'][3]) / 2.0 <= r['y1']
+            ]
+            if has_display_typography(q_spans):
+                questions_with_images.add((r['num'], r['lang']))
+                continue
+
             beziers = sum(1 for d in q_drawings if any(it[0] == 'c' for it in d.get('items', [])))
             if q_drawings:
                 min_x = min(d['rect'].x0 for d in q_drawings)
@@ -1298,6 +1453,143 @@ def format_span_tokens(spans_list: List[Dict[str, Any]]) -> str:
     res = re.sub(r'\^\{([^}]+)\}\^\{([^}]+)\}', r'^{\1\2}', res)
     res = re.sub(r'_\{([^}]+)\}_\{([^}]+)\}', r'_{\1\2}', res)
     return res
+
+def is_radical_sign_glyph(d: dict) -> bool:
+    """
+    Glifo √ desenhado como forma preenchida separada da barra: estreito e alto, com um vértice na
+    ponta superior direita (onde a barra começa) e o pé da haste na base.
+    """
+    r = d.get('rect')
+    items = d.get('items', [])
+    if not r or d.get('fill') is None or not items or not (2.5 <= r.width <= 9.0 and 4.0 <= r.height <= 25.0):
+        return False
+    points = [p for it in items for p in it[1:] if isinstance(p, pymupdf.Point)]
+    top_right = any(abs(p.x - r.x1) <= 0.8 and abs(p.y - r.y0) <= 0.8 for p in points)
+    foot = any(abs(p.y - r.y1) <= 0.8 and r.x0 + 0.3 * r.width <= p.x <= r.x1 - 0.2 * r.width for p in points)
+    return top_right and foot
+
+
+def span_chars(page: pymupdf.Page, span: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Caracteres (com caixa) do próprio span; outro glifo dentro da mesma caixa (sobreposto) fica de
+    fora. Vazio se o texto não confere (fonte remapeada, span já partido).
+    """
+    if "chars" in span:  # pedaço de um span já partido
+        return span["chars"]
+    # rawdict da página inteira (com recorte, o PyMuPDF reparte os spans de outro jeito), uma vez por página
+    raw = getattr(page, "_raw_spans", None)
+    if raw is None:
+        raw = [sp for b in page.get_text("rawdict").get("blocks", []) for l in b.get("lines", []) for sp in l["spans"]]
+        page._raw_spans = raw
+    for sp in raw:
+        if (abs(sp["bbox"][0] - span["bbox"][0]) < 0.5 and abs(sp["bbox"][1] - span["bbox"][1]) < 0.5
+                and abs(sp["size"] - span["size"]) < 0.1 and ''.join(c["c"] for c in sp["chars"]) == span["text"]):
+            return sp["chars"]
+    return []
+
+
+def split_span_at(page: pymupdf.Page, span: Dict[str, Any], x: float,
+                  cover: Optional[Tuple[float, float]] = None) -> List[Dict[str, Any]]:
+    """
+    Parte um span no ponto x usando as posições dos caracteres; o span original passa a ser a parte
+    da esquerda e a da direita é devolvida. Spans de fontes remapeadas (Symbol) não são partidos.
+    `cover`: faixa horizontal de um glifo sobreposto; o espaço do span embaixo dele é descartado
+    ('0 8' com a vírgula desenhada por cima do espaço vira '0' + ',' + '8').
+    """
+    if "Symbol" in span.get("font", ""):
+        return []
+    chars = span_chars(page, span)
+    if not chars:
+        return []
+    if cover:
+        chars = [c for c in chars if c["c"].strip() or not (cover[0] - 0.5 <= (c["bbox"][0] + c["bbox"][2]) / 2.0 <= cover[1] + 0.5)]
+    left = ''.join(c["c"] for c in chars if (c["bbox"][0] + c["bbox"][2]) / 2.0 < x)
+    right = ''.join(c["c"] for c in chars if (c["bbox"][0] + c["bbox"][2]) / 2.0 >= x)
+    if not left.strip() or not right.strip():
+        return []
+    # Caixas ajustadas aos caracteres visíveis: espaços nas pontas não empurram a ordem horizontal
+    left_ink = [c for c in chars if (c["bbox"][0] + c["bbox"][2]) / 2.0 < x and c["c"].strip()]
+    right_ink = [c for c in chars if (c["bbox"][0] + c["bbox"][2]) / 2.0 >= x and c["c"].strip()]
+    right_x0 = right_ink[0]["bbox"][0]
+    right_text = right.strip() + (' ' if right != right.rstrip() else '')
+    left_text = (' ' if left != left.lstrip() else '') + left.strip()
+    right_span = {**span, "text": right_text, "bbox": [right_x0] + span["bbox"][1:],
+                  "origin": [right_x0, span["origin"][1]], "chars": chars_matching(right_ink, right_text)}
+    span["text"] = left_text
+    span["bbox"] = [span["bbox"][0], span["bbox"][1], left_ink[-1]["bbox"][2], span["bbox"][3]]
+    span["chars"] = chars_matching(left_ink, left_text)
+    return [right_span]
+
+
+def chars_matching(ink: List[Dict[str, Any]], text: str) -> List[Dict[str, Any]]:
+    """Caracteres de um pedaço de span com os espaços das pontas recolocados, para nova partição."""
+    lead = [{"c": " ", "bbox": ink[0]["bbox"]}] if text.startswith(' ') else []
+    trail = [{"c": " ", "bbox": ink[-1]["bbox"]}] if text.endswith(' ') else []
+    body = text.strip()
+    inner = [c for c in ink]
+    # Espaços internos não têm tinta: recompõe a sequência a partir do texto
+    out, k = [], 0
+    for ch in body:
+        if ch.strip():
+            out.append(inner[k]); k += 1
+        else:
+            prev = out[-1]["bbox"] if out else ink[0]["bbox"]
+            out.append({"c": ch, "bbox": (prev[2], prev[1], prev[2], prev[3])})
+    return lead + out + trail
+
+
+STACKABLE_DELIMITERS = '()[]'
+# Peças Unicode de delimitador alto (topo, extensão, base) e o delimitador que formam
+DELIMITER_PIECES = {**{c: '(' for c in '⎛⎜⎝'}, **{c: ')' for c in '⎞⎟⎠'},
+                    **{c: '[' for c in '⎡⎢⎣'}, **{c: ']' for c in '⎤⎥⎦'}}
+
+
+def delimiter_of(ch: str) -> str:
+    return DELIMITER_PIECES.get(ch, ch if ch in STACKABLE_DELIMITERS else '')
+
+
+def merge_stacked_delimiters(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Parênteses e colchetes altos (em volta de frações) são compostos por peças do mesmo glifo
+    empilhadas na mesma coluna. Cada peça cairia numa linha diferente e sobraria como '( )' solto;
+    aqui as peças viram um único delimitador com a altura total.
+    """
+    # Só glifos da fonte de símbolos: '(' de texto (Arial) alinhados em linhas consecutivas, como em
+    # 'P(t)' nas alternativas, também se tocam verticalmente e não podem ser fundidos.
+    pieces = sorted((s for s in spans if delimiter_of(s["text"].strip()[:1])
+                     and re.search(r'Symbol|Math|Extra', s.get("font", ""))),
+                    key=lambda s: s["bbox"][1])
+    merged_away = set()
+    for s in pieces:
+        delim = delimiter_of(s["text"].strip()[:1])
+        if id(s) in merged_away or {delimiter_of(c) for c in s["text"].strip()} != {delim}:
+            continue
+        last = s
+        for other in pieces:
+            if (other is s or id(other) in merged_away or delimiter_of(other["text"].strip()[:1]) != delim
+                    or abs(other["bbox"][0] - s["bbox"][0]) > 1.0
+                    or not (last["bbox"][1] < other["bbox"][1] <= last["bbox"][3] + 0.5)):
+                continue
+            s["bbox"] = [s["bbox"][0], s["bbox"][1], s["bbox"][2], max(s["bbox"][3], other["bbox"][3])]
+            last = other
+            # Peças de extensão podem vir juntas ('((') ou no início de um span maior (') ×'):
+            # só os delimitadores saem dele
+            rest = other["text"].lstrip()
+            while rest and delimiter_of(rest[0]) == delim:
+                rest = rest[1:]
+            if not rest.strip():
+                merged_away.add(id(other))
+            else:
+                other["text"] = rest
+                other["bbox"] = [s["bbox"][2], other["bbox"][1], other["bbox"][2], other["bbox"][3]]
+        s["origin"] = [s["origin"][0], last["origin"][1]]
+        if last is not s:
+            # Delimitador alto: candidato a matriz (o conteúdo decide, ver reconstrução de matrizes)
+            s["text"] = delim
+            s["is_lb"] = delim in '(['
+            s["is_rb"] = delim in ')]'
+    return [s for s in spans if id(s) not in merged_away]
+
 
 def extract_column_math_text(
     page: pymupdf.Page,
@@ -1377,6 +1669,8 @@ def extract_column_math_text(
                     else:
                         for u_ch, repl in UNICODE_MATH_MAP.items():
                             t = t.replace(u_ch, repl)
+                        # Cifrão do texto (não monetário) não pode ser lido como delimitador de fórmula
+                        t = LITERAL_DOLLAR_REGEX.sub(LITERAL_DOLLAR_PLACEHOLDER, t)
 
                     spans.append({
                         "text": t,
@@ -1389,6 +1683,19 @@ def extract_column_math_text(
                         "used": False,
                         "is_math": "Symbol" in font or any(c in t for c in [r'\pi', r'\cdot', r'\times', r'\le', r'\infty', '^', '_'])
                     })
+
+    spans = merge_stacked_delimiters(spans)
+
+    # Barra de fração composta com '_' (2021 P2): vira barra, como um traço desenhado. A linha do '_'
+    # fica ~0,15 corpo abaixo da linha de base do próprio span
+    text_bars = []
+    for s in spans:
+        if re.fullmatch(r'_{2,}', s["text"].strip()):
+            s["used"] = True
+            bar_y = s["origin"][1] + 0.15 * s["size"]
+            unders = [c["bbox"] for c in span_chars(page, s) if c["c"] == '_']
+            bx0, bx1 = (unders[0][0], unders[-1][2]) if unders else (s["bbox"][0], s["bbox"][2])
+            text_bars.append((bx0, bar_y, bx1, bar_y))
 
     # Tabelas estruturadas: seu texto sai do fluxo e um marcador ocupa a posição da tabela
     composite_elements = []
@@ -1413,12 +1720,16 @@ def extract_column_math_text(
     # Coleta desenhos vetoriais na coluna (linhas horizontais de frações e radicais)
     hlines = []
     radicals = []
+    radical_glyphs = []
     for d in page.get_drawings():
         r = d['rect']
         if r.y0 < 40 or r.y1 > bottom or r.x1 < clip_rect.x0 or r.x0 > clip_rect.x1:
             continue
         items = d.get('items', [])
         lines = [it for it in items if it[0] == 'l']
+        if is_radical_sign_glyph(d):
+            radical_glyphs.append(r)
+            continue
         if len(lines) >= 4 and 8.0 <= (r.x1 - r.x0) <= 120.0 and 6.0 <= (r.y1 - r.y0) <= 35.0:
             horiz_top = [l for l in lines if abs(l[1].y - l[2].y) < 1.0 and abs(l[1].y - r.y0) < 3.0]
             # A barra do radical é a união dos segmentos horizontais do topo: no glifo √ preenchido
@@ -1442,13 +1753,50 @@ def extract_column_math_text(
                 hlines.append((r.x0, (r.y0 + r.y1) / 2.0, r.x1, (r.y0 + r.y1) / 2.0))
             continue
 
+        # Letras vetoriais (bolinhas das alternativas de 2019, com curvas) têm travessões que não são barras
+        if any(it[0] == 'c' for it in items):
+            continue
+        # Radical e barra de fração no mesmo caminho ('√3/3' em 2009): a haste sobe até a ponta esquerda
+        # de um traço horizontal, que é a barra do radical; os outros traços horizontais seguem como barras
+        # Em figuras (fórmulas estruturais, gráficos) as pontas se ligam a outros traços; no radical a
+        # barra termina solta à direita e o pé da haste só encontra, no máximo, o gancho curto
+        def touching(pt: pymupdf.Point, exclude: Tuple[Any, ...]) -> List[Any]:
+            return [l for l in lines if all(l is not e for e in exclude)
+                    and any(abs(q.x - pt.x) <= 1.2 and abs(q.y - pt.y) <= 1.2 for q in (l[1], l[2]))]
+
+        radical_bars = set()
+        for bar in lines:
+            if abs(bar[1].y - bar[2].y) >= 1.0 or abs(bar[1].x - bar[2].x) < 2.0:
+                continue
+            bx0, bx1, by = min(bar[1].x, bar[2].x), max(bar[1].x, bar[2].x), bar[1].y
+            for stem in lines:
+                top, foot = sorted((stem[1], stem[2]), key=lambda pt: pt.y)
+                if (abs(top.x - bx0) <= 1.2 and abs(top.y - by) <= 1.2
+                        and 5.0 <= foot.y - top.y <= 25.0 and 1.0 <= top.x - foot.x <= 0.4 * (foot.y - top.y)
+                        and not touching(pymupdf.Point(bx1, by), (bar,))
+                        and not touching(top, (bar, stem))
+                        and all(abs(l[1].x - l[2].x) <= 4.0 and abs(l[1].y - l[2].y) <= 4.0
+                                for l in touching(foot, (stem,)))):
+                    radicals.append((pymupdf.Rect(foot.x - 3.0, by, bx1, foot.y), bx0, bx1))
+                    radical_bars.add(id(bar))
+                    break
         for it in items:
-            if it[0] == 'l':
+            if it[0] == 'l' and id(it) not in radical_bars:
                 p1, p2 = it[1], it[2]
                 if abs(p1.y - p2.y) < 1.0:
                     x0, x1 = min(p1.x, p2.x), max(p1.x, p2.x)
                     if 2.0 <= (x1 - x0) <= 80.0 and clip_rect.x0 - 5 <= x0 and x1 <= clip_rect.x1 + 5:
                         hlines.append((x0, (p1.y + p2.y) / 2.0, x1, (p1.y + p2.y) / 2.0))
+
+    hlines.extend(text_bars)
+
+    # Glifo √ desenhado à parte, com a barra numa linha separada que começa na ponta superior
+    # direita do glifo (ex.: 2012, 2020-2022): o par forma o radical e a barra deixa de ser fração
+    for g in radical_glyphs:
+        bar = next((h for h in hlines if abs(h[0] - g.x1) <= 1.5 and abs(h[1] - g.y0) <= 1.5), None)
+        if bar:
+            hlines.remove(bar)
+            radicals.append((pymupdf.Rect(g.x0, g.y0, bar[2], g.y1), bar[0], bar[2]))
 
     # 1. Reconstrução de Radicais (\sqrt{...} ou \sqrt[n]{...})
     for r, rx0, rx1 in radicals:
@@ -1466,12 +1814,20 @@ def extract_column_math_text(
             deg_spans.sort(key=lambda s: s['bbox'][0])
             deg_text = format_span_tokens(deg_spans).strip()
 
+        def on_radical_line(s: Dict[str, Any]) -> bool:
+            return not s["used"] and (r.y0 - 2.0 <= s['bbox'][1] <= r.y1 - 1.0) and s['bbox'][3] <= r.y1 + 4.0
+
+        # Span que atravessa uma ponta da barra ('/ 2' em 'L/√2', '2)' em '(2√2)') é partido nela
+        for s_over in [s for s in spans if on_radical_line(s) and s['bbox'][0] < rx0 - 1.0 < s['bbox'][2] - 1.0]:
+            spans.extend(split_span_at(page, s_over, rx0 - 0.5))
+        for s_over in [s for s in spans if on_radical_line(s) and s['bbox'][0] + 1.0 < rx1 + 1.0 < s['bbox'][2]]:
+            spans.extend(split_span_at(page, s_over, rx1 + 0.5))
+
         # Spans do radicando (devem estar sob a barra horizontal superior)
         rad_spans = [
-            s for s in spans if not s["used"]
-            and (r.y0 - 2.0 <= s['bbox'][1] <= r.y1 - 1.0)
-            and (s['bbox'][3] <= r.y1 + 4.0)
+            s for s in spans if on_radical_line(s)
             and (rx0 - 4.0 <= s['bbox'][0] and s['bbox'][2] <= rx1 + 4.0)
+            and (s['bbox'][0] + s['bbox'][2]) / 2.0 <= rx1 + 0.5
         ]
         if rad_spans:
             for s in rad_spans:
@@ -1496,14 +1852,31 @@ def extract_column_math_text(
         # Ignora linhas horizontais que interceptam tabelas estruturadas
         if any(r.intersects(pymupdf.Rect(x0, y - 2.0, x1, y + 2.0)) for r in tab_rects):
             continue
+        # Delimitadores ampliados ('(' de '(6 − 2)!' em corpo maior) ultrapassam a barra em alguns
+        # pontos: o lado da barra é decidido pelo centro do glifo, com folga de 3 pt na borda
+        # Alcance vertical do numerador/denominador: 16 pt ou 1,8 corpo, o que for maior
+        def above_bar(s: Dict[str, Any]) -> bool:
+            reach = max(16.0, 1.8 * s['size'])
+            return y - reach <= s['bbox'][1] and s['bbox'][3] <= y + 3.0 and (s['bbox'][1] + s['bbox'][3]) / 2.0 < y - 0.5
+
+        def below_bar(s: Dict[str, Any]) -> bool:
+            reach = max(16.0, 1.8 * s['size'])
+            return y - 3.0 <= s['bbox'][1] and s['bbox'][3] <= y + reach and (s['bbox'][1] + s['bbox'][3]) / 2.0 > y + 0.5
+
+        # Numeradores (ou denominadores) de frações vizinhas num span só ('6!     15!'): o span é partido
+        # nas pontas da barra. Só pedaços de fórmula; linha de prosa perto da barra fica inteira
+        for end, cut in ((x0, x0 - 0.5), (x1, x1 + 0.5)):
+            for s_over in [s for s in spans if not s["used"] and (above_bar(s) or below_bar(s))
+                           and s['bbox'][0] + 1.0 < end < s['bbox'][2] - 1.0
+                           and not re.search(r'[A-Za-zÀ-ÿ]{3,}', s['text'])]:
+                spans.extend(split_span_at(page, s_over, cut))
+
         num_spans = [
-            s for s in spans if not s["used"]
-            and (y - 16.0 <= s['bbox'][1] and s['bbox'][3] <= y + 1.5)
+            s for s in spans if not s["used"] and above_bar(s)
             and (x0 - 1.5 <= (s['bbox'][0] + s['bbox'][2]) / 2.0 <= x1 + 1.5)
         ]
         den_spans = [
-            s for s in spans if not s["used"]
-            and (y - 1.5 <= s['bbox'][1] and s['bbox'][3] <= y + 16.0)
+            s for s in spans if not s["used"] and below_bar(s)
             and (x0 - 1.5 <= (s['bbox'][0] + s['bbox'][2]) / 2.0 <= x1 + 1.5)
         ]
 
@@ -1565,16 +1938,19 @@ def extract_column_math_text(
     lb_spans = [s for s in spans if not s["used"] and s["is_lb"]]
     rb_spans = [s for s in spans if not s["used"] and s["is_rb"]]
 
+    # Peças empilhadas já foram fundidas (merge_stacked_delimiters): só peças que se tocam formam um
+    # delimitador. Uma folga maior juntava os colchetes de alternativas vizinhas numa matriz só.
+    MATRIX_PIECE_GAP = 1.5
     lb_groups = []
     for s in sorted(lb_spans, key=lambda s: (s['bbox'][0], s['bbox'][1])):
-        if not lb_groups or abs(s['bbox'][0] - lb_groups[-1][-1]['bbox'][0]) > 5 or abs(s['bbox'][1] - lb_groups[-1][-1]['bbox'][3]) > 10:
+        if not lb_groups or abs(s['bbox'][0] - lb_groups[-1][-1]['bbox'][0]) > 5 or abs(s['bbox'][1] - lb_groups[-1][-1]['bbox'][3]) > MATRIX_PIECE_GAP:
             lb_groups.append([s])
         else:
             lb_groups[-1].append(s)
 
     rb_groups = []
     for s in sorted(rb_spans, key=lambda s: (s['bbox'][0], s['bbox'][1])):
-        if not rb_groups or abs(s['bbox'][0] - rb_groups[-1][-1]['bbox'][0]) > 5 or abs(s['bbox'][1] - rb_groups[-1][-1]['bbox'][3]) > 10:
+        if not rb_groups or abs(s['bbox'][0] - rb_groups[-1][-1]['bbox'][0]) > 5 or abs(s['bbox'][1] - rb_groups[-1][-1]['bbox'][3]) > MATRIX_PIECE_GAP:
             rb_groups.append([s])
         else:
             rb_groups[-1].append(s)
@@ -1598,7 +1974,17 @@ def extract_column_math_text(
                 and ly0 - 4 <= s['bbox'][1] and s['bbox'][3] <= ly1 + 4
                 and s not in lg and s not in rg
             ]
-            if matrix_spans:
+            # Parênteses altos em volta de frações não são matriz: a fração já virou elemento composto
+            region = pymupdf.Rect(lx1, ly0, rx0, ly1)
+            encloses_composite = any(
+                region.contains(pymupdf.Point((c['bbox'][0] + c['bbox'][2]) / 2.0, (c['bbox'][1] + c['bbox'][3]) / 2.0))
+                for c in composite_elements
+            )
+            row_mids = sorted((s['bbox'][1] + s['bbox'][3]) / 2.0 for s in matrix_spans)
+            n_rows = 1 + sum(1 for a, b in zip(row_mids, row_mids[1:]) if b - a > 6.0)
+            # Unidades empilhadas entre parênteses altos ('(kJ/mol)') têm palavras, matriz não
+            has_words = any(re.search(r'[A-Za-zÀ-ÿ]{3,}', re.sub(r'\\[a-zA-Z]+', '', s['text'])) for s in matrix_spans)
+            if matrix_spans and not encloses_composite and not has_words and n_rows >= 2:
                 for s in lg + rg + matrix_spans:
                     s["used"] = True
                 rows = []
@@ -1630,26 +2016,62 @@ def extract_column_math_text(
 
     sorted_items = sorted(remaining, key=lambda it: (it["bbox"][1] + it["bbox"][3]) / 2.0)
 
+    def is_text_span(it: Dict[str, Any]) -> bool:
+        return "font" in it and bool(re.search(r'\w', it["text"]))
+
+    def touches(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        # Índice/expoente encosta no símbolo (a fonte troca de corpo sem espaço entre os spans)
+        return abs(a["bbox"][0] - b["bbox"][2]) <= 1.5 or abs(b["bbox"][0] - a["bbox"][2]) <= 1.5
+
     lines = []
     for it in sorted_items:
         y_mid = (it["bbox"][1] + it["bbox"][3]) / 2.0
-        # Spans pertencem à mesma linha apenas se a distância vertical for de até 4.5 pontos
-        if lines and abs(y_mid - lines[-1]["y_mid"]) <= 4.5:
-            lines[-1]["items"].append(it)
-            lines[-1]["y0"] = min(lines[-1]["y0"], it["bbox"][1])
-            lines[-1]["y1"] = max(lines[-1]["y1"], it["bbox"][3])
-            lines[-1]["y_mid"] = (lines[-1]["y0"] + lines[-1]["y1"]) / 2.0
+        line = lines[-1] if lines else None
+        # Spans pertencem à mesma linha se a distância vertical for de até 4.5 pontos. Índice ou
+        # expoente (corpo menor) desce/sobe mais que isso: entra na linha se o seu centro cai na
+        # faixa vertical do texto comum dela, senão vira uma linha só de dígitos e se perde (R₁ -> 'R .')
+        if line and (abs(y_mid - line["y_mid"]) <= 4.5 or (
+                is_text_span(it) and line["text_size"] and it["size"] < line["text_size"] * 0.85
+                and line["text_y0"] <= y_mid <= line["text_y1"]
+                and any(touches(it, other) for other in line["items"] if is_text_span(other))) or (
+                # Expoente vem antes do texto comum na ordem vertical: a linha só tem corpo menor
+                is_text_span(it) and line["text_size"] and line["text_size"] < it["size"] * 0.85
+                and it["bbox"][1] <= line["y_mid"] <= it["bbox"][3]
+                and any(touches(it, other) for other in line["items"]))):
+            line["items"].append(it)
+            line["y0"] = min(line["y0"], it["bbox"][1])
+            line["y1"] = max(line["y1"], it["bbox"][3])
+            line["y_mid"] = (line["y0"] + line["y1"]) / 2.0
         else:
-            lines.append({
+            line = {
                 "y_mid": y_mid,
                 "y0": it["bbox"][1],
                 "y1": it["bbox"][3],
-                "items": [it]
-            })
+                "items": [it],
+                "text_size": 0.0,
+                "text_y0": it["bbox"][1],
+                "text_y1": it["bbox"][3],
+            }
+            lines.append(line)
+        if is_text_span(it) and it["size"] >= line["text_size"]:
+            if it["size"] > line["text_size"]:
+                line["text_size"], line["text_y0"], line["text_y1"] = it["size"], it["bbox"][1], it["bbox"][3]
+            else:
+                line["text_y0"] = min(line["text_y0"], it["bbox"][1])
+                line["text_y1"] = max(line["text_y1"], it["bbox"][3])
 
     formatted_lines = []
     for line_dict in lines:
         line = line_dict["items"]
+        line.sort(key=lambda item: item["bbox"][0])
+        # Glifo sobreposto a um span mais longo (o 'O' de 'Olimpíadas' desenhado à parte, em 2010):
+        # o span longo é partido na posição do glifo, senão o glifo sai no fim da linha
+        for it in [i for i in line if "font" in i and i["text"].strip()]:
+            host = next((h for h in line if h is not it and "font" in h and len(h["text"]) > len(it["text"])
+                         and h["bbox"][0] + 0.5 < it["bbox"][0] < h["bbox"][2] - 1.0
+                         and abs(h["origin"][1] - it["origin"][1]) < 0.5 and abs(h["size"] - it["size"]) < 0.5), None)
+            if host:
+                line.extend(split_span_at(page, host, it["bbox"][0], cover=(it["bbox"][0], it["bbox"][2])))
         line.sort(key=lambda item: item["bbox"][0])
         # Tamanho e linha de base de referência vêm do texto comum da linha: elementos compostos
         # (frações, radicais) e sinais avulsos (vírgula ampliada, glifos de controle) os distorcem
@@ -1661,32 +2083,47 @@ def extract_column_math_text(
         line_tokens = []
         for item in line:
             t = item["text"]
-            if item["size"] < base_size * 0.85 and t.strip():
+            if "font" not in item and item["size"] < base_size * 0.85 and t.strip():
+                # Fração/radical em corpo menor: a "origem" é a barra (eixo matemático, acima da linha
+                # de base). Expoente (m^{2/3}, 2^{-t/5730}) não desce abaixo da linha de base; fração no
+                # meio da linha ('AC = 7/5 BD') desce vários pontos
+                if item["bbox"][3] <= base_orig_y + 1.0:
+                    t = f"^{{{t.strip()}}}"
+            elif item["size"] < base_size * 0.85 and t.strip():
+                # Espaço final do span fica fora das chaves: '_{1 }na' -> '_{1} na'
+                trail = ' ' if t != t.rstrip() else ''
                 if item["origin"][1] > base_orig_y + 1.2:
-                    t = f"_{{{t}}}"
+                    t = f"_{{{t.strip()}}}{trail}"
                 elif item["origin"][1] < base_orig_y - 1.2 or (item.get("is_math") and item["bbox"][3] <= base_orig_y):
                     # Ordinal sobrescrito após número (1ª, 2º)
                     if t.strip() in ('a', 'o') and line_tokens and line_tokens[-1][0].rstrip()[-1:].isdigit():
                         t = 'ª' if t.strip() == 'a' else 'º'
                     else:
-                        t = f"^{{{t}}}"
+                        t = f"^{{{t.strip()}}}{trail}"
             line_tokens.append((t, item))
 
         res_str = ""
         prev_item = None
+        prev_token = ""
         for t, item in line_tokens:
             if prev_item:
                 gap = item["bbox"][0] - prev_item["bbox"][2]
-                if gap > 1.8 and not res_str.endswith(" ") and not t.startswith((" ", "^", "_", "ª", "º")):
+                # Depois de índice/expoente o vão entre palavras é menor ('d_{Alpha} e'); colado (H_{2}O) é 0
+                after_script = prev_token.startswith(("^", "_")) and t[:1].isalnum()
+                min_gap = 1.0 if after_script else 1.8
+                if gap > min_gap and not res_str.endswith(" ") and not t.startswith((" ", "^", "_", "ª", "º")):
                     res_str += " "
             res_str += t
             prev_item = item
+            prev_token = t
 
         brace_pat = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
         for _ in range(3):
             res_str = re.sub(r'\^(' + brace_pat + r')\s*\^(' + brace_pat + r')', lambda m: f"^{{{m.group(1)[1:-1].strip()} {m.group(2)[1:-1].strip()}}}", res_str)
             res_str = re.sub(r'_(' + brace_pat + r')\s*_(' + brace_pat + r')', lambda m: f"_{{{m.group(1)[1:-1].strip()} {m.group(2)[1:-1].strip()}}}", res_str)
         res_str = re.sub(r'\^\{([^}]+)\s+-\s*(\d+)\}', r'^{\1 - \2}', res_str)
+
+        res_str = separate_glued_commands(res_str)
 
         # Colapsa múltiplos parênteses de blocos escaláveis (InDesign) em \left( e \right)
         res_str = re.sub(r'\({2,}', lambda m: r'\left(', res_str)
@@ -1699,12 +2136,9 @@ def extract_column_math_text(
         res_str = re.sub(r'[\^_]\{\s*\}', '', res_str)
 
         if any(sym in res_str for sym in [r'\frac', r'\sqrt', r'\begin{pmatrix}']):
-            clean_text = re.sub(r'\\[a-zA-Z]+', '', res_str)
-            prose_words = [w for w in re.findall(r'\b[a-zA-ZÀ-ÿ]{3,}\b', clean_text)]
-            if len(prose_words) >= 2:
+            if has_prose(res_str):
                 # Linha de prosa contendo fórmula inline: envolve apenas as fórmulas matemáticas em $ ... $
-                res_str = re.sub(r'(\d+\s+)?(\\frac\{[^{}]+\}\{[^{}]+\})', r'$\g<0>$', res_str)
-                res_str = re.sub(r'(\\sqrt(?:\[[^\]]+\])?\{[^{}]+\})', r'$\g<0>$', res_str)
+                res_str = wrap_math_in_prose(res_str)
             else:
                 # Linha de equação matemática pura (não inicia por letra de alternativa isolada)
                 if not res_str.strip().startswith('$') and not re.match(r'^[A-E]\b', res_str.strip()):
@@ -1789,6 +2223,37 @@ def extract_vector_circle_alternatives(doc: pymupdf.Document) -> Dict[int, Dict[
                 circles_per_q[q_num] = alts
     return circles_per_q
 
+def locate_formatted_alternatives(enunciado: str, raw_alts: List[str]) -> Optional[Tuple[int, List[str]]]:
+    """
+    Acha, no fim do enunciado, o trecho formatado de cada alternativa lida em texto bruto: compara
+    ignorando a marcação LaTeX ($, ^, _, chaves, espaços). Devolve a posição de corte do enunciado e
+    os 5 trechos formatados, ou None se o fim do enunciado não corresponder às alternativas.
+    """
+    markup = set('$^_{} ')
+    kept = [(i, ch) for i, ch in enumerate(enunciado) if ch not in markup]
+    norm = ''.join(ch for _, ch in kept)
+    norm_alts = [''.join(ch for ch in a if ch not in markup) for a in raw_alts]
+    if not all(norm_alts):
+        return None
+    target = ''.join(norm_alts)
+    pos = norm.rfind(target)
+    if pos < 0 or norm[pos + len(target):].strip('.'):
+        return None
+    pieces, k = [], pos
+    for n in map(len, norm_alts):
+        start, end = kept[k][0], kept[k + n - 1][0] + 1
+        while start > 0 and enunciado[start - 1] in '$^_{':
+            start -= 1
+        while end < len(enunciado) and enunciado[end] in '}$':
+            end += 1
+        pieces.append(enunciado[start:end].strip())
+        k += n
+    cut = kept[pos][0]
+    while cut > 0 and enunciado[cut - 1] in '$^_{':
+        cut -= 1
+    return cut, pieces
+
+
 def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float]], Dict[str, Any]]:
     """
     Extrai todas as questões de um caderno PDF, retornando um dicionário indexado por (número_questão, língua).
@@ -1809,7 +2274,7 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
     def insert_tables(text: str) -> str:
         return TABLE_PLACEHOLDER_REGEX.sub(
             lambda m: '\n' + tables_markdown[(int(m.group(1)), int(m.group(2)))] + '\n', text
-        ).strip()
+        ).strip().replace(LITERAL_DOLLAR_PLACEHOLDER, r'\$')
 
     # Extrai e limpa o texto das páginas respeitando as duas colunas
     pages_text = []
@@ -1862,9 +2327,17 @@ def extract_questions_from_pdf(pdf_path: Path) -> Dict[Tuple[int, Optional[float
             alts = vector_circle_alts[q_num]
             first_alt = alts.get('A', '')
             if first_alt and first_alt != IMAGE_ALT_PLACEHOLDER:
-                pos_alt = enunciado.find(first_alt)
-                if pos_alt > 0:
-                    enunciado = sanitize_question_text(enunciado[:pos_alt])
+                # As alternativas dos círculos vêm do texto bruto ('10-2'); a versão com as fórmulas
+                # reconstruídas ('$10^{-2}$') está no fim do enunciado e é a que vale
+                located = locate_formatted_alternatives(enunciado, [alts[let] for let in 'ABCDE'])
+                if located:
+                    cut, pieces = located
+                    enunciado = sanitize_question_text(enunciado[:cut])
+                    alts = {let: format_alternative_latex(piece) for let, piece in zip('ABCDE', pieces)}
+                else:
+                    pos_alt = enunciado.find(first_alt)
+                    if pos_alt > 0:
+                        enunciado = sanitize_question_text(enunciado[:pos_alt])
 
         # Determina se a questão contém imagem
         has_img_in_alts = any(val == IMAGE_ALT_PLACEHOLDER for val in alts.values())
