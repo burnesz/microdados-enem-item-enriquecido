@@ -193,6 +193,9 @@ SUPPORTED_YEARS = list(range(2009, 2025))
 # Nome padrão do arquivo consolidado contendo todas as edições
 CONSOLIDATED_OUTPUT_FILENAME = "itens_prova_2009_2024_enriquecido.csv"
 
+# Subconjunto para análise com LLM somente texto: itens com habilidade, não abandonados e sem imagem
+LLM_TEXT_OUTPUT_FILENAME = "itens_prova_2009_2024_llm_texto.csv"
+
 # Ordem canônica e padronizada das colunas para os arquivos enriquecidos
 CANONICAL_COLUMNS = [
     'ANO_APLICACAO',

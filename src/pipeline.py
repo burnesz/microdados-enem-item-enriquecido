@@ -14,6 +14,7 @@ from src.config import (
     TARGET_AREA,
     SUPPORTED_YEARS,
     CONSOLIDATED_OUTPUT_FILENAME,
+    LLM_TEXT_OUTPUT_FILENAME,
     CANONICAL_COLUMNS,
     INTEGER_COLUMNS,
     FLOAT_COLUMNS
@@ -433,3 +434,33 @@ def consolidate_all_years(
 
     return df_consolidated
 
+
+
+def export_llm_text_items(
+    output_dir: Optional[Path] = None,
+    base_dir: Optional[Path] = None,
+    output_filename: Optional[str] = None
+) -> pd.DataFrame:
+    """
+    Gera, a partir da base consolidada, o subconjunto de itens aproveitáveis por um LLM somente texto:
+    CO_HABILIDADE preenchido, IN_ITEM_ABAN = 0 e IN_ITEM_IMAGEM = 0.
+    """
+    root_dir = base_dir or Path(__file__).resolve().parent.parent
+    out_folder = output_dir or (root_dir / "processed")
+    source_file = out_folder / CONSOLIDATED_OUTPUT_FILENAME
+    out_file = out_folder / (output_filename or LLM_TEXT_OUTPUT_FILENAME)
+
+    if not source_file.exists():
+        raise FileNotFoundError(f"Base consolidada não encontrada: {source_file}")
+
+    df = enforce_column_types(pd.read_csv(source_file, sep=';', encoding='utf-8-sig'))
+    mask = (
+        df['CO_HABILIDADE'].notna()
+        & (df['IN_ITEM_ABAN'] == 0)
+        & (df['IN_ITEM_IMAGEM'] == 0)
+    )
+    df_llm = df[mask].reset_index(drop=True)
+    df_llm.to_csv(out_file, sep=';', index=False, encoding='utf-8-sig')
+
+    print(f" Subconjunto LLM texto: {len(df_llm)} de {len(df)} itens -> {out_file}")
+    return df_llm

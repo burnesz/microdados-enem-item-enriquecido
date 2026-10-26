@@ -29,7 +29,7 @@ if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
 from src.config import ALL_AREAS, VALID_AREAS
-from src.pipeline import run_enem_pipeline, consolidate_all_years
+from src.pipeline import run_enem_pipeline, consolidate_all_years, export_llm_text_items
 from src.organize import organize_all_years, organize_year
 
 
@@ -102,6 +102,12 @@ def main():
         help="Caminho do diretório de saída (opcional, padrão: processed/)"
     )
 
+    parser.add_argument(
+        "--llm-texto",
+        action="store_true",
+        help="Gera apenas o subconjunto para LLM textual a partir da base consolidada existente"
+    )
+
     args = parser.parse_args()
 
     base_path = Path(args.base_dir) if args.base_dir else current_dir
@@ -114,6 +120,11 @@ def main():
         print(f"========================================================\n")
         organize_all_years(base_path)
         print(f"\n[OK] Organização concluída com sucesso.")
+        return
+
+    # Modo de exportação isolado do subconjunto para LLM textual
+    if args.llm_texto:
+        export_llm_text_items(output_dir=output_path, base_dir=base_path)
         return
 
     years_to_process = parse_years(args.year)
@@ -171,6 +182,7 @@ def main():
                 base_dir=base_path,
                 years=valid_years
             )
+            export_llm_text_items(output_dir=output_path, base_dir=base_path)
         except Exception as e:
             print(f"\n[AVISO NA CONSOLIDAÇÃO] {e}\n", file=sys.stderr)
 
