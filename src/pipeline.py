@@ -23,7 +23,6 @@ from src.dictionary_parser import parse_exam_codes, parse_math_exam_codes
 from src.pdf_matcher import build_selected_exams, build_selected_math_exams
 from src.pdf_extractor import extract_questions_from_pdf
 from src.organize import organize_year
-from src.quality_checks import run_quality_checks
 
 def enforce_column_types(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -465,14 +464,4 @@ def export_llm_text_items(
 
     print(f" Subconjunto LLM texto: {len(df_llm)} de {len(df)} itens -> {out_file}")
 
-    # Checagens de regressão da transcrição: sinaliza os itens suspeitos num relatório à parte
-    df_flags = run_quality_checks(df_llm)
-    report_file = out_file.with_name(out_file.stem + "_checagens.csv")
-    df_flags.to_csv(report_file, sep=';', index=False, encoding='utf-8-sig')
-    if df_flags.empty:
-        print(f" Checagens de transcrição: nenhum item sinalizado -> {report_file}")
-    else:
-        print(f" Checagens de transcrição: {df_flags['CO_ITEM'].nunique()} itens sinalizados -> {report_file}")
-        for regra, total in df_flags['regra'].value_counts().items():
-            print(f"   - {regra}: {total}")
     return df_llm
